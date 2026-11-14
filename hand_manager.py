@@ -19,14 +19,10 @@ class JoueuseDeChamp(Joueuse):
         self.buts = 0
         self.tirs = 0
         self.passes_decisives = 0
-        
-        # 🆕 Nouvelles stats Attaque
         self.pertes_de_balles_passe = 0
         self.pertes_de_balles_faute = 0
         self.duels_off_gagnes = 0
         self.duels_off_perdus = 0
-        
-        # 🆕 Nouvelles stats Défense
         self.duels_def_gagnes = 0
         self.duels_def_perdus = 0
         self.neutralisations = 0
@@ -67,8 +63,8 @@ class Gardienne(Joueuse):
         self.arrets = 0
         self.tirs_subis = 0
         self.buts_encaisses = 0
-        self.buts = 0  # Buts marqués par la gardienne
-        self.tirs = 0  # Tirs tentés par la gardienne
+        self.buts = 0
+        self.tirs = 0
 
     def pourcentage_arrets(self):
         if self.tirs_subis == 0:
@@ -93,7 +89,6 @@ class Gardienne(Joueuse):
 
 class EquipeManager:
     def __init__(self, fichier="effectif_hand.json"):
-        # Chemin absolu garanti pour éviter la perte de données au redémarrage
         dossier_script = os.path.dirname(os.path.abspath(__file__))
         self.fichier = os.path.join(dossier_script, fichier)
         self.joueuses = {}
@@ -152,8 +147,7 @@ class EquipeManager:
             except Exception as e:
                 print(f"Erreur lors du chargement : {e}")
 
-    def archiver_match(self, nom_match, attaques_adv_data=None, joueuses_actives=None):
-        # On filtre uniquement les joueuses présentes sur la feuille de match
+    def archiver_match(self, nom_match, attaques_adv_data=None, joueuses_actives=None, journal_actions=None, commentaires_staff=None):
         lignes_champ = [j for j in self.joueuses.values() if isinstance(j, JoueuseDeChamp) and (joueuses_actives is None or j.nom in joueuses_actives)]
         lignes_gard = [j for j in self.joueuses.values() if isinstance(j, Gardienne) and (joueuses_actives is None or j.nom in joueuses_actives)]
         
@@ -163,13 +157,21 @@ class EquipeManager:
         score_adv = sum(g.buts_encaisses for g in lignes_gard)
 
         for j in self.joueuses.values():
-            # Si la joueuse n'était pas sur la feuille de match, on ignore son archivage et sa remise à zéro
             if joueuses_actives is not None and j.nom not in joueuses_actives:
                 continue
 
+            match_common_data = {
+                "match": nom_match,
+                "score_equipe": score_eq,
+                "score_adversaire": score_adv,
+                "attaques_adversaires": attaques_adv_data or {},
+                "journal_actions": journal_actions or [],
+                "commentaires_staff": commentaires_staff or []
+            }
+
             if isinstance(j, JoueuseDeChamp):
                 match_data = {
-                    "match": nom_match,
+                    **match_common_data,
                     "buts": j.buts,
                     "tirs": j.tirs,
                     "passes_decisives": j.passes_decisives,
@@ -184,13 +186,10 @@ class EquipeManager:
                     "balles_provoquees": j.pertes_balles_provoquees,
                     "cartons_jaunes": j.cartons_jaunes,
                     "exclusions_2min": j.exclusions_2min,
-                    "score_equipe": score_eq,
-                    "score_adversaire": score_adv,
-                    "attaques_adversaires": attaques_adv_data or {}
                 }
             else:
                 match_data = {
-                    "match": nom_match,
+                    **match_common_data,
                     "arrets": j.arrets,
                     "tirs_subis": j.tirs_subis,
                     "buts_encaisses": j.buts_encaisses,
@@ -198,34 +197,20 @@ class EquipeManager:
                     "tirs": j.tirs,
                     "cartons_jaunes": j.cartons_jaunes,
                     "exclusions_2min": j.exclusions_2min,
-                    "score_equipe": score_eq,
-                    "score_adversaire": score_adv,
-                    "attaques_adversaires": attaques_adv_data or {}
                 }
             
             j.historique_matchs.append(match_data)
             
-            # Remise à zéro pour le match suivant
+            # Remise à zéro
             j.cartons_jaunes = 0
             j.exclusions_2min = 0
             if isinstance(j, JoueuseDeChamp):
-                j.buts = 0
-                j.tirs = 0
-                j.passes_decisives = 0
-                j.pertes_de_balles_passe = 0
-                j.pertes_de_balles_faute = 0
-                j.duels_off_gagnes = 0
-                j.duels_off_perdus = 0
-                j.duels_def_gagnes = 0
-                j.duels_def_perdus = 0
-                j.neutralisations = 0
-                j.interceptions = 0
-                j.pertes_balles_provoquees = 0
+                j.buts = 0; j.tirs = 0; j.passes_decisives = 0
+                j.pertes_de_balles_passe = 0; j.pertes_de_balles_faute = 0
+                j.duels_off_gagnes = 0; j.duels_off_perdus = 0
+                j.duels_def_gagnes = 0; j.duels_def_perdus = 0
+                j.neutralisations = 0; j.interceptions = 0; j.pertes_balles_provoquees = 0
             elif isinstance(j, Gardienne):
-                j.arrets = 0
-                j.tirs_subis = 0
-                j.buts_encaisses = 0
-                j.buts = 0
-                j.tirs = 0
+                j.arrets = 0; j.tirs_subis = 0; j.buts_encaisses = 0; j.buts = 0; j.tirs = 0
 
         self.sauvegarder_donnees()
