@@ -1,14 +1,53 @@
+import os
 from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 
-def generer_pdf_chronologique(nom_match, score_eq, score_adv, historique_actions, attaques_adv, commentaires_staff):
-    """
-    Génère un rapport PDF chronologique et qualitatif du match sous forme de flux d'octets.
-    """
+def creer_bandeau_en_tete(club_nom, equipe_nom, styles):
+    """Crée un bandeau professionnel moderne avec le club, l'équipe et le logo."""
+    logo_path = "logo_club.png"
+    
+    style_club = ParagraphStyle(
+        'BandeauClub', parent=styles['Normal'], 
+        fontName='Helvetica-Bold', fontSize=12, leading=14, textColor=colors.white
+    )
+    style_team = ParagraphStyle(
+        'BandeauTeam', parent=styles['Normal'], 
+        fontName='Helvetica-Bold', fontSize=9, leading=12, textColor=colors.HexColor("#63B3ED")
+    )
+    
+    text_content = [
+        Paragraph(club_nom.upper(), style_club),
+        Spacer(1, 2),
+        Paragraph(f"Équipe : {equipe_nom}", style_team)
+    ]
+    
+    if os.path.exists(logo_path):
+        try:
+            img = Image(logo_path, width=40, height=40)
+            img.hAlign = 'RIGHT'
+            cell_right = img
+        except Exception:
+            cell_right = Paragraph("<b>CLUB</b>", ParagraphStyle('BandeauRight', parent=styles['Normal'], alignment=2, fontSize=8, textColor=colors.white))
+    else:
+        cell_right = Paragraph("", styles['Normal'])
+
+    # Largeur disponible pour marges de 1.5cm = ~18cm = 510 points
+    bandeau_table = Table([[text_content, cell_right]], colWidths=[415, 95])
+    bandeau_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#1A365D")), # Bleu pro pour le chrono
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 8),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ('LEFTPADDING', (0,0), (-1,-1), 12),
+        ('RIGHTPADDING', (0,0), (-1,-1), 12),
+    ]))
+    return bandeau_table
+
+def generer_pdf_chronologique(nom_match, score_eq, score_adv, historique_actions, attaques_adv, commentaires_staff, club_nom="Mon Club", equipe_nom="Équipe"):
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -41,7 +80,11 @@ def generer_pdf_chronologique(nom_match, score_eq, score_adv, historique_actions
         textColor=colors.white, fontName="Helvetica-Bold", alignment=1
     )
 
-    # --- ENTÊTE ---
+    # --- BANDEAU D'EN-TÊTE ---
+    story.append(creer_bandeau_en_tete(club_nom, equipe_nom, styles))
+    story.append(Spacer(1, 10))
+
+    # --- ENTÊTE TITRE ---
     story.append(Paragraph("RAPPORT CHRONOLOGIQUE ET TACTIQUE", title_style))
     story.append(Paragraph(f"Rencontre : <b>{nom_match}</b> | Score Final : <b>{score_eq} - {score_adv}</b>", subtitle_style))
     story.append(Spacer(1, 10))
@@ -91,7 +134,7 @@ def generer_pdf_chronologique(nom_match, score_eq, score_adv, historique_actions
 
     story.append(Spacer(1, 15))
 
-    # --- SECTION 3 : JOURNAL CHRONOLOGIQUE DES ACTIONS ---
+    # --- SECTION 3 : JOURNAL CHRONOLOGIQUE ---
     story.append(Paragraph("3. Journal Chronologique des Actions (Play-by-Play)", section_style))
     if historique_actions:
         act_data = [[

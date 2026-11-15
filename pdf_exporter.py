@@ -3,12 +3,54 @@ from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
-def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardiennes, attaques_adversaires=None):
+def creer_bandeau_en_tete(club_nom, equipe_nom, styles):
+    """Crée un bandeau professionnel moderne avec le club, l'équipe et le logo."""
+    logo_path = "logo_club.png"
+    
+    # Styles typographiques pour le bandeau professionnel
+    style_club = ParagraphStyle(
+        'BandeauClub', parent=styles['Normal'], 
+        fontName='Helvetica-Bold', fontSize=13, leading=15, textColor=colors.white
+    )
+    style_team = ParagraphStyle(
+        'BandeauTeam', parent=styles['Normal'], 
+        fontName='Helvetica-Bold', fontSize=9, leading=12, textColor=colors.HexColor("#38bdf8")
+    )
+    
+    text_content = [
+        Paragraph(club_nom.upper(), style_club),
+        Spacer(1, 2),
+        Paragraph(f"Équipe : {equipe_nom}", style_team)
+    ]
+    
+    if os.path.exists(logo_path):
+        try:
+            img = Image(logo_path, width=42, height=42)
+            img.hAlign = 'RIGHT'
+            cell_right = img
+        except Exception:
+            cell_right = Paragraph("<b>CLUB</b>", ParagraphStyle('BandeauRight', parent=styles['Normal'], alignment=TA_RIGHT, fontSize=8, textColor=colors.white))
+    else:
+        cell_right = Paragraph("", styles['Normal'])
+
+    # Largeur totale A4 avec marges de 25pt = 545 points
+    bandeau_table = Table([[text_content, cell_right]], colWidths=[430, 115])
+    bandeau_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#0B2545")), # Bleu marine pro
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 8),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ('LEFTPADDING', (0,0), (-1,-1), 12),
+        ('RIGHTPADDING', (0,0), (-1,-1), 12),
+    ]))
+    return bandeau_table
+
+def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardiennes, attaques_adversaires=None, club_nom="Mon Club", equipe_nom="Équipe"):
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -34,16 +76,18 @@ def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardi
     story = []
 
     # =========================================================================
-    # PAGE 1 : VRAIE FEUILLE DE MATCH OFFICIELLE FFHANDBALL (Administrative)
+    # PAGE 1 : VRAIE FEUILLE DE MATCH OFFICIELLE
     # =========================================================================
-    story.append(Paragraph("FÉDÉRATION FRANÇAISE DE HANDBALL — CHAMPIONNAT D2F", header_org))
+    story.append(creer_bandeau_en_tete(club_nom, equipe_nom, styles))
+    story.append(Spacer(1, 10))
+    
+    story.append(Paragraph("FÉDÉRATION FRANÇAISE DE HANDBALL — CHAMPIONNAT", header_org))
     story.append(Spacer(1, 4))
     story.append(Paragraph("FEUILLE DE MATCH OFFICIELLE", title_style))
     story.append(Spacer(1, 2))
     story.append(Paragraph(nom_match, subtitle_style))
     story.append(Spacer(1, 10))
     
-    # En-tête Scoreboard officiel
     res_text = "VICTOIRE" if score_eq > score_adv else ("DÉFAITE" if score_eq < score_adv else "MATCH NUL")
     res_color = "#10b981" if score_eq > score_adv else ("#ef4444" if score_eq < score_adv else "#f59e0b")
     
@@ -63,7 +107,6 @@ def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardi
     story.append(t_score)
     story.append(Spacer(1, 15))
     
-    # Composition officielle - Joueuses de Champ
     story.append(Paragraph("COMPOSITION DE L'ÉQUIPE — JOUEUSES DE CHAMP", h1_style))
     headers_ffh_c = ["N°", "Nom de la Joueuse", "Poste", "Buts", "Avert. (Jaune)", "Exclusions (2min)"]
     table_data_ffh_c = [[Paragraph(h, cell_header_style) for h in headers_ffh_c]]
@@ -90,7 +133,6 @@ def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardi
     story.append(t_ffh_champ)
     story.append(Spacer(1, 12))
     
-    # Composition officielle - Gardiennes
     if lignes_gardiennes:
         story.append(Paragraph("COMPOSITION DE L'ÉQUIPE — GARDIENNES", h1_style))
         headers_ffh_g = ["N°", "Nom de la Gardienne", "Arrêts", "Tirs Subis", "% Arrêts", "Buts Encaissés", "Avert.", "2min"]
@@ -118,9 +160,12 @@ def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardi
         story.append(t_ffh_gard)
 
     # =========================================================================
-    # PAGE 2 : BILAN COLLECTIF AVANCÉ & ANALYSE TACTIQUE ADVERSE
+    # PAGE 2 : BILAN COLLECTIF & ANALYSE TACTIQUE
     # =========================================================================
     story.append(PageBreak())
+    story.append(creer_bandeau_en_tete(club_nom, equipe_nom, styles))
+    story.append(Spacer(1, 10))
+    
     story.append(Paragraph("RAPPORT ANALYTIQUE & COLLECTIF", subtitle_style))
     story.append(Spacer(1, 4))
     story.append(Paragraph("Bilan Statistique & Tactique — " + nom_match, title_style))
@@ -159,7 +204,7 @@ def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardi
     
     if attaques_adversaires:
         story.append(Spacer(1, 15))
-        story.append(Paragraph("Analyse Tactique — Attaques Adverses (Yago, Yego...)", h1_style))
+        story.append(Paragraph("Analyse Tactique — Attaques Adverses", h1_style))
         att_data = [[Paragraph("Système d'Attaque Adverse", cell_header_style), Paragraph("Nombre d'Utilisations", cell_header_style)]]
         for sys_nom, count in attaques_adversaires.items():
             att_data.append([Paragraph(sys_nom, cell_style), Paragraph(str(count), cell_style)])
@@ -171,79 +216,6 @@ def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardi
             ('BOTTOMPADDING', (0,0), (-1,-1), 4)
         ]))
         story.append(t_att)
-
-    # =========================================================================
-    # PAGES SUIVANTES : FICHES INDIVIDUELLES DÉTAILLÉES PAR JOUEUSE
-    # =========================================================================
-    for row in lignes_champ:
-        story.append(PageBreak())
-        story.append(Paragraph("FICHE INDIVIDUELLE JOUEUSE", subtitle_style))
-        story.append(Spacer(1, 2))
-        story.append(Paragraph(f"#{row.get('N°')} — {row.get('Joueuse')} <i>({row.get('Poste')})</i>", title_style))
-        story.append(Spacer(1, 15))
-        
-        story.append(Paragraph("Performances Offensives", h1_style))
-        atk_summary = [
-            [Paragraph("<b>Buts / Tirs</b>", cell_header_style), Paragraph("<b>Efficacité Tirs</b>", cell_header_style), Paragraph("<b>Passes Décisives</b>", cell_header_style)],
-            [Paragraph(f"{row.get('Buts', 0)} / {row.get('Tirs', 0)}", cell_style), Paragraph(str(row.get('Réussite', '0%')), cell_style), Paragraph(str(row.get('Passes D.', 0)), cell_style)]
-        ]
-        t_atk1 = Table(atk_summary, colWidths=[181, 182, 182])
-        t_atk1.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), ffh_blue), ('GRID', (0,0), (-1,-1), 0.5, border_color), ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
-        story.append(t_atk1)
-        story.append(Spacer(1, 10))
-        
-        atk_details = [
-            [Paragraph("<b>Duels Offensifs (Gagnés / Perdus)</b>", cell_header_style), Paragraph("<b>Pertes de Balle (Passe / Faute)</b>", cell_header_style)],
-            [Paragraph(str(row.get('Duels Off', '0/0')), cell_style), Paragraph(f"{row.get('Perte (Passe)', 0)} / {row.get('Perte (Faute)', 0)}", cell_style)]
-        ]
-        t_atk2 = Table(atk_details, colWidths=[272, 273])
-        t_atk2.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), ffh_blue), ('GRID', (0,0), (-1,-1), 0.5, border_color), ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
-        story.append(t_atk2)
-        story.append(Spacer(1, 20))
-        
-        story.append(Paragraph("Performances Défensives & Discipline", h1_style))
-        def_details = [
-            [Paragraph("<b>Duels Défensifs</b>", cell_header_style), Paragraph("<b>Interceptions</b>", cell_header_style), Paragraph("<b>Neutralisations</b>", cell_header_style), Paragraph("<b>Balles Provoquées</b>", cell_header_style)],
-            [Paragraph(str(row.get('Duels Déf', '0/0')), cell_style), Paragraph(str(row.get('Interceptions', 0)), cell_style), Paragraph(str(row.get('Neutralisations', 0)), cell_style), Paragraph(str(row.get('Provoquées', 0)), cell_style)]
-        ]
-        t_def = Table(def_details, colWidths=[136, 136, 136, 137])
-        t_def.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), ffh_red), ('GRID', (0,0), (-1,-1), 0.5, border_color), ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
-        story.append(t_def)
-        story.append(Spacer(1, 10))
-        
-        disc_details = [
-            [Paragraph("<b>Cartons Jaunes (Avertissement)</b>", cell_header_style), Paragraph("<b>Exclusions 2 Minutes</b>", cell_header_style)],
-            [Paragraph(str(row.get('🟨', 0)), cell_style), Paragraph(str(row.get('⏱️ 2min', 0)), cell_style)]
-        ]
-        t_disc = Table(disc_details, colWidths=[272, 273])
-        t_disc.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), ffh_blue), ('GRID', (0,0), (-1,-1), 0.5, border_color), ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
-        story.append(t_disc)
-
-    for row in lignes_gardiennes:
-        story.append(PageBreak())
-        story.append(Paragraph("RAPPORT INDIVIDUEL GARDIENNE", subtitle_style))
-        story.append(Spacer(1, 2))
-        story.append(Paragraph(f"#{row.get('N°')} — {row.get('Gardienne')} <i>(Gardienne)</i>", title_style))
-        story.append(Spacer(1, 15))
-        
-        story.append(Paragraph("Efficacité dans la Cage", h1_style))
-        g_stats = [
-            [Paragraph("<b>Arrêts / Tirs Subis</b>", cell_header_style), Paragraph("<b>Pourcentage d'Arrêts</b>", cell_header_style), Paragraph("<b>Buts Encaissés</b>", cell_header_style)],
-            [Paragraph(f"{row.get('Arrêts', 0)} / {row.get('Tirs Subis', 0)}", cell_style), Paragraph(str(row.get('% Arrêts', '0%')), cell_style), Paragraph(str(row.get('Buts Encaissés', 0)), cell_style)]
-        ]
-        t_g1 = Table(g_stats, colWidths=[181, 182, 182])
-        t_g1.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), ffh_red), ('GRID', (0,0), (-1,-1), 0.5, border_color), ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
-        story.append(t_g1)
-        story.append(Spacer(1, 15))
-        
-        story.append(Paragraph("Relance & Discipline", h1_style))
-        g_off = [
-            [Paragraph("<b>Buts Marqués / Tirs Tentés</b>", cell_header_style), Paragraph("<b>Sanctions</b>", cell_header_style)],
-            [Paragraph(str(row.get('Buts Marqués', '0/0')), cell_style), Paragraph(f"{row.get('🟨', 0)} Avertissement(s) / {row.get('⏱️ 2min', 0)} 2min", cell_style)]
-        ]
-        t_g2 = Table(g_off, colWidths=[272, 273])
-        t_g2.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,0), ffh_blue), ('GRID', (0,0), (-1,-1), 0.5, border_color), ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6)]))
-        story.append(t_g2)
 
     doc.build(story)
     buffer.seek(0)
