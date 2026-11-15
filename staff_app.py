@@ -17,7 +17,7 @@ def run_staff_app(equipe_assignee):
     st.markdown("""
         <style>
         .block-container {
-            padding-top: 2.8rem; /* <-- Augmente juste un peu cette valeur ici pour donner de l'air en haut */
+            padding-top: 2.8rem;
             padding-bottom: 2rem;
         }
 
@@ -106,7 +106,6 @@ def run_staff_app(equipe_assignee):
         st.title("🤾‍♀️ HandStats Pro")
         st.markdown("### L'outil de performance et de suivi tactique de terrain (Mode Expert).")
         
-        # SÉCURITÉ ANTI-PERTE : Si un match est en cours, on affiche un encadré prioritaire sur l'accueil
         if st.session_state.get("match_en_cours", False):
             nom_m = st.session_state.get("nom_match_actuel", "Match")
             st.markdown("---")
@@ -146,7 +145,6 @@ def run_staff_app(equipe_assignee):
     # 2. ÉCRAN : MATCH EN DIRECT
     # ==========================================
     elif st.session_state.page_actuelle == "match":
-        # MODIFICATION SÉCURITÉ : Ne remet plus match_en_cours à False, permet de revenir en arrière sans perdre le match
         if st.button("⬅️ Retour à l'accueil", key="btn_retour_accueil"):
             aller_a("accueil")
             
@@ -155,7 +153,6 @@ def run_staff_app(equipe_assignee):
         if not manager.joueuses:
             st.warning("Aucune joueuse enregistrée. Rendez-vous dans l'onglet 'Effectif' pour en ajouter.")
         else:
-            # Configuration si non lancé
             if not st.session_state.get("match_en_cours", False):
                 with st.container(border=True):
                     st.subheader("📋 Composition de la Feuille de Match")
@@ -209,7 +206,6 @@ def run_staff_app(equipe_assignee):
                                 st.session_state.commentaires_staff_match = []
                                 st.rerun()
             
-            # Match en cours
             else:
                 nom_match_actuel = st.session_state.get("nom_match_actuel", "Match")
                 joueuses_actives = st.session_state.get("joueuses_actives_match", [])
@@ -246,12 +242,12 @@ def run_staff_app(equipe_assignee):
                 if st.session_state.get("chrono_en_cours", False):
                     st_autorefresh(interval=1000, key="chrono_auto_refresh")
 
-                total_buts_marques = sum(manager.joueuses[n].buts for n in joueuses_actives if hasattr(manager.joueuses[n], 'buts'))
-                total_buts_encaisses = sum(manager.joueuses[n].buts_encaisses for n in joueuses_actives if isinstance(manager.joueuses[n], Gardienne))
+                total_buts_marques = sum(manager.joueuses[n].buts for n in joueuses_actives if n in manager.joueuses and hasattr(manager.joueuses[n], 'buts'))
+                total_buts_encaisses = sum(manager.joueuses[n].buts_encaisses for n in joueuses_actives if n in manager.joueuses and isinstance(manager.joueuses[n], Gardienne))
                 temps_actuel_str = formater_temps(secondes_totales)
 
                 # ==========================================
-                # ÉTAPE 1 : HAUT DE PAGE (HAUTEURS STRICTEMENT HARMONISÉES À 74PX)
+                # ÉTAPE 1 : HAUT DE PAGE
                 # ==========================================
                 c_top_info, c_top_score_chrono, c_top_controls = st.columns([1.2, 2.6, 1.2])
                 
@@ -314,29 +310,38 @@ def run_staff_app(equipe_assignee):
                 # ==========================================
                 st.markdown("🏃‍♀️ **7 Majeur sur le Terrain (Clique pour sélectionner la joueuse active) :**")
                 
+                # Nettoyage et synchronisation des listes avec manager.joueuses
+                st.session_state.terrain_joueuses = [j for j in st.session_state.get("terrain_joueuses", []) if j in manager.joueuses]
+                st.session_state.banc_joueuses = [j for j in st.session_state.get("banc_joueuses", []) if j in manager.joueuses]
+                
                 terrain_list = st.session_state.terrain_joueuses
-                if not terrain_list and st.session_state.banc_joueuses:
-                    st.session_state.terrain_joueuses.append(st.session_state.banc_joueuses.pop(0))
+                if not terrain_list and manager.joueuses:
+                    tous_noms = list(manager.joueuses.keys())
+                    st.session_state.terrain_joueuses = tous_noms[:7]
+                    st.session_state.banc_joueuses = tous_noms[7:]
                     terrain_list = st.session_state.terrain_joueuses
 
-                if not st.session_state.get("joueuse_focus_live") or st.session_state.joueuse_focus_live not in terrain_list:
+                if not st.session_state.get("joueuse_focus_live") or st.session_state.joueuse_focus_live not in manager.joueuses:
                     if terrain_list:
                         st.session_state.joueuse_focus_live = terrain_list[0]
+                    elif manager.joueuses:
+                        st.session_state.joueuse_focus_live = list(manager.joueuses.keys())[0]
 
                 cols_terrain = st.columns(max(len(terrain_list), 1))
                 for idx, nom_j in enumerate(terrain_list):
-                    p_item = manager.joueuses[nom_j]
-                    col_cible = cols_terrain[idx % len(cols_terrain)]
-                    with col_cible:
-                        est_actif = (nom_j == st.session_state.get("joueuse_focus_live"))
-                        type_btn = "primary" if est_actif else "secondary"
-                        
-                        prefix = get_prefix_couleur(p_item.poste)
-                        label_btn = f"{prefix} #{p_item.numero} {p_item.nom.split()[0]}"
-                        
-                        if st.button(label_btn, key=f"terrain_j_{nom_j}", use_container_width=True, type=type_btn):
-                            st.session_state.joueuse_focus_live = nom_j
-                            st.rerun()
+                    if nom_j in manager.joueuses:
+                        p_item = manager.joueuses[nom_j]
+                        col_cible = cols_terrain[idx % len(cols_terrain)]
+                        with col_cible:
+                            est_actif = (nom_j == st.session_state.get("joueuse_focus_live"))
+                            type_btn = "primary" if est_actif else "secondary"
+                            
+                            prefix = get_prefix_couleur(p_item.poste)
+                            label_btn = f"{prefix} #{p_item.numero} {p_item.nom.split()[0]}"
+                            
+                            if st.button(label_btn, key=f"terrain_j_{nom_j}", use_container_width=True, type=type_btn):
+                                st.session_state.joueuse_focus_live = nom_j
+                                st.rerun()
 
                 with st.expander("🔄 Gérer les rotations (Remplacements rapides)"):
                     r_col1, r_col2, r_col3 = st.columns([2, 2, 1])
@@ -367,6 +372,11 @@ def run_staff_app(equipe_assignee):
                 # ÉTAPE 3 : FICHE ACTION JOUEUSE ACTIVE
                 # ==========================================
                 nom_focus = st.session_state.get("joueuse_focus_live")
+                if not nom_focus or nom_focus not in manager.joueuses:
+                    if manager.joueuses:
+                        st.session_state.joueuse_focus_live = list(manager.joueuses.keys())[0]
+                        nom_focus = st.session_state.joueuse_focus_live
+
                 if not nom_focus or nom_focus not in manager.joueuses:
                     st.warning("Sélectionnez une joueuse active sur le terrain.")
                 else:
@@ -594,8 +604,8 @@ def run_staff_app(equipe_assignee):
                 with st.container(border=True):
                     st.subheader("📊 Dashboard & Synthèse Live de la Rencontre")
                     
-                    champ_actives = [manager.joueuses[n] for n in joueuses_actives if isinstance(manager.joueuses[n], JoueuseDeChamp)]
-                    gard_actives = [manager.joueuses[n] for n in joueuses_actives if isinstance(manager.joueuses[n], Gardienne)]
+                    champ_actives = [manager.joueuses[n] for n in joueuses_actives if n in manager.joueuses and isinstance(manager.joueuses[n], JoueuseDeChamp)]
+                    gard_actives = [manager.joueuses[n] for n in joueuses_actives if n in manager.joueuses and isinstance(manager.joueuses[n], Gardienne)]
                     
                     tot_b = sum(j.buts for j in champ_actives) + sum(g.buts for g in gard_actives)
                     tot_t = sum(j.tirs for j in champ_actives) + sum(g.tirs for g in gard_actives)
@@ -655,8 +665,8 @@ def run_staff_app(equipe_assignee):
                     st.markdown("### 🎙️ Debriefing Vestiaires — Synthèse 1ère Période")
                     st.write("Analysez les indicateurs clés pour ajuster votre causerie et vos choix tactiques avant la reprise.")
                     
-                    champ_actives_mi = [manager.joueuses[n] for n in joueuses_actives if isinstance(manager.joueuses[n], JoueuseDeChamp)]
-                    gard_actives_mi = [manager.joueuses[n] for n in joueuses_actives if isinstance(manager.joueuses[n], Gardienne)]
+                    champ_actives_mi = [manager.joueuses[n] for n in joueuses_actives if n in manager.joueuses and isinstance(manager.joueuses[n], JoueuseDeChamp)]
+                    gard_actives_mi = [manager.joueuses[n] for n in joueuses_actives if n in manager.joueuses and isinstance(manager.joueuses[n], Gardienne)]
                     
                     b_mi = sum(j.buts for j in champ_actives_mi) + sum(g.buts for g in gard_actives_mi)
                     t_mi = sum(j.tirs for j in champ_actives_mi) + sum(g.tirs for g in gard_actives_mi)
@@ -698,71 +708,73 @@ def run_staff_app(equipe_assignee):
                     st.write("Vérifiez les données ci-dessus puis archivez la rencontre pour alimenter les statistiques de saison et les graphiques de tendance.")
                     
                     with st.expander("✏️ Ajuster des statistiques manuellement en cas d'erreur (Adapté au rôle de la joueuse)"):
-                        joueuse_a_corriger = st.selectbox("Choisir la joueuse à rectifier", joueuses_actives, key="select_correction_live")
-                        p_corr = manager.joueuses[joueuse_a_corriger]
-                        
-                        with st.form(key=f"form_correction_{p_corr.nom}"):
-                            if isinstance(p_corr, JoueuseDeChamp):
-                                cc1, cc2 = st.columns(2)
-                                with cc1:
-                                    c_buts = st.number_input("Buts marqués", min_value=0, value=getattr(p_corr, 'buts', 0))
-                                    c_tirs = st.number_input("Tirs totaux", min_value=0, value=getattr(p_corr, 'tirs', 0))
-                                    c_pd = st.number_input("Passes décisives", min_value=0, value=getattr(p_corr, 'passes_decisives', 0))
-                                    c_ppasse = st.number_input("Pertes de balle (passe)", min_value=0, value=getattr(p_corr, 'pertes_de_balles_passe', 0))
-                                    c_pfaute = st.number_input("Pertes de balle (faute)", min_value=0, value=getattr(p_corr, 'pertes_de_balles_faute', 0))
-                                    c_dog = st.number_input("Duels off gagnés", min_value=0, value=getattr(p_corr, 'duels_off_gagnes', 0))
-                                    c_dop = st.number_input("Duels off perdus", min_value=0, value=getattr(p_corr, 'duels_off_perdus', 0))
-                                with cc2:
-                                    c_ddg = st.number_input("Duels déf gagnés", min_value=0, value=getattr(p_corr, 'duels_def_gagnes', 0))
-                                    c_ddp = st.number_input("Duels déf perdus", min_value=0, value=getattr(p_corr, 'duels_def_perdus', 0))
-                                    c_int = st.number_input("Interceptions", min_value=0, value=getattr(p_corr, 'interceptions', 0))
-                                    c_neut = st.number_input("Neutralisations", min_value=0, value=getattr(p_corr, 'neutralisations', 0))
-                                    c_prov = st.number_input("Pertes provoquées", min_value=0, value=getattr(p_corr, 'pertes_balles_provoquees', 0))
-                                    c_jaune = st.number_input("Cartons jaunes", min_value=0, value=getattr(p_corr, 'cartons_jaunes', 0))
-                                    c_2min = st.number_input("Exclusions 2min", min_value=0, value=getattr(p_corr, 'exclusions_2min', 0))
+                        joueuses_existantes_actives = [n for n in joueuses_actives if n in manager.joueuses]
+                        if joueuses_existantes_actives:
+                            joueuse_a_corriger = st.selectbox("Choisir la joueuse à rectifier", joueuses_existantes_actives, key="select_correction_live")
+                            p_corr = manager.joueuses[joueuse_a_corriger]
+                            
+                            with st.form(key=f"form_correction_{p_corr.nom}"):
+                                if isinstance(p_corr, JoueuseDeChamp):
+                                    cc1, cc2 = st.columns(2)
+                                    with cc1:
+                                        c_buts = st.number_input("Buts marqués", min_value=0, value=getattr(p_corr, 'buts', 0))
+                                        c_tirs = st.number_input("Tirs totaux", min_value=0, value=getattr(p_corr, 'tirs', 0))
+                                        c_pd = st.number_input("Passes décisives", min_value=0, value=getattr(p_corr, 'passes_decisives', 0))
+                                        c_ppasse = st.number_input("Pertes de balle (passe)", min_value=0, value=getattr(p_corr, 'pertes_de_balles_passe', 0))
+                                        c_pfaute = st.number_input("Pertes de balle (faute)", min_value=0, value=getattr(p_corr, 'pertes_de_balles_faute', 0))
+                                        c_dog = st.number_input("Duels off gagnés", min_value=0, value=getattr(p_corr, 'duels_off_gagnes', 0))
+                                        c_dop = st.number_input("Duels off perdus", min_value=0, value=getattr(p_corr, 'duels_off_perdus', 0))
+                                    with cc2:
+                                        c_ddg = st.number_input("Duels déf gagnés", min_value=0, value=getattr(p_corr, 'duels_def_gagnes', 0))
+                                        c_ddp = st.number_input("Duels déf perdus", min_value=0, value=getattr(p_corr, 'duels_def_perdus', 0))
+                                        c_int = st.number_input("Interceptions", min_value=0, value=getattr(p_corr, 'interceptions', 0))
+                                        c_neut = st.number_input("Neutralisations", min_value=0, value=getattr(p_corr, 'neutralisations', 0))
+                                        c_prov = st.number_input("Pertes provoquées", min_value=0, value=getattr(p_corr, 'pertes_balles_provoquees', 0))
+                                        c_jaune = st.number_input("Cartons jaunes", min_value=0, value=getattr(p_corr, 'cartons_jaunes', 0))
+                                        c_2min = st.number_input("Exclusions 2min", min_value=0, value=getattr(p_corr, 'exclusions_2min', 0))
 
-                                if st.form_submit_button("Valider la correction", type="primary", use_container_width=True):
-                                    p_corr.buts = c_buts
-                                    p_corr.tirs = c_tirs
-                                    p_corr.passes_decisives = c_pd
-                                    p_corr.pertes_de_balles_passe = c_ppasse
-                                    p_corr.pertes_de_balles_faute = c_pfaute
-                                    p_corr.duels_off_gagnes = c_dog
-                                    p_corr.duels_off_perdus = c_dop
-                                    p_corr.duels_def_gagnes = c_ddg
-                                    p_corr.duels_def_perdus = c_ddp
-                                    p_corr.interceptions = c_int
-                                    p_corr.neutralisations = c_neut
-                                    p_corr.pertes_balles_provoquees = c_prov
-                                    p_corr.cartons_jaunes = c_jaune
-                                    p_corr.exclusions_2min = c_2min
-                                    manager.sauvegarder_donnees()
-                                    st.success("Correction enregistrée avec succès !")
-                                    st.rerun()
+                                    if st.form_submit_button("Valider la correction", type="primary", use_container_width=True):
+                                        p_corr.buts = c_buts
+                                        p_corr.tirs = c_tirs
+                                        p_corr.passes_decisives = c_pd
+                                        p_corr.pertes_de_balles_passe = c_ppasse
+                                        p_corr.pertes_de_balles_faute = c_pfaute
+                                        p_corr.duels_off_gagnes = c_dog
+                                        p_corr.duels_off_perdus = c_dop
+                                        p_corr.duels_def_gagnes = c_ddg
+                                        p_corr.duels_def_perdus = c_ddp
+                                        p_corr.interceptions = c_int
+                                        p_corr.neutralisations = c_neut
+                                        p_corr.pertes_balles_provoquees = c_prov
+                                        p_corr.cartons_jaunes = c_jaune
+                                        p_corr.exclusions_2min = c_2min
+                                        manager.sauvegarder_donnees()
+                                        st.success("Correction enregistrée avec succès !")
+                                        st.rerun()
 
-                            elif isinstance(p_corr, Gardienne):
-                                cc1, cc2 = st.columns(2)
-                                with cc1:
-                                    c_arrets = st.number_input("Arrêts décisifs", min_value=0, value=getattr(p_corr, 'arrets', 0))
-                                    c_subis = st.number_input("Tirs subis", min_value=0, value=getattr(p_corr, 'tirs_subis', 0))
-                                    c_encaisses = st.number_input("Buts encaissés", min_value=0, value=getattr(p_corr, 'buts_encaisses', 0))
-                                    c_jaune = st.number_input("Cartons jaunes", min_value=0, value=getattr(p_corr, 'cartons_jaunes', 0))
-                                with cc2:
-                                    c_buts = st.number_input("Buts marqués", min_value=0, value=getattr(p_corr, 'buts', 0))
-                                    c_tirs = st.number_input("Tirs totaux pris (attaque)", min_value=0, value=getattr(p_corr, 'tirs', 0))
-                                    c_2min = st.number_input("Exclusions 2min", min_value=0, value=getattr(p_corr, 'exclusions_2min', 0))
+                                elif isinstance(p_corr, Gardienne):
+                                    cc1, cc2 = st.columns(2)
+                                    with cc1:
+                                        c_arrets = st.number_input("Arrêts décisifs", min_value=0, value=getattr(p_corr, 'arrets', 0))
+                                        c_subis = st.number_input("Tirs subis", min_value=0, value=getattr(p_corr, 'tirs_subis', 0))
+                                        c_encaisses = st.number_input("Buts encaissés", min_value=0, value=getattr(p_corr, 'buts_encaisses', 0))
+                                        c_jaune = st.number_input("Cartons jaunes", min_value=0, value=getattr(p_corr, 'cartons_jaunes', 0))
+                                    with cc2:
+                                        c_buts = st.number_input("Buts marqués", min_value=0, value=getattr(p_corr, 'buts', 0))
+                                        c_tirs = st.number_input("Tirs totaux pris (attaque)", min_value=0, value=getattr(p_corr, 'tirs', 0))
+                                        c_2min = st.number_input("Exclusions 2min", min_value=0, value=getattr(p_corr, 'exclusions_2min', 0))
 
-                                if st.form_submit_button("Valider la correction", type="primary", use_container_width=True):
-                                    p_corr.arrets = c_arrets
-                                    p_corr.tirs_subis = c_subis
-                                    p_corr.buts_encaisses = c_encaisses
-                                    p_corr.cartons_jaunes = c_jaune
-                                    p_corr.buts = c_buts
-                                    p_corr.tirs = c_tirs
-                                    p_corr.exclusions_2min = c_2min
-                                    manager.sauvegarder_donnees()
-                                    st.success("Correction enregistrée avec succès !")
-                                    st.rerun()
+                                    if st.form_submit_button("Valider la correction", type="primary", use_container_width=True):
+                                        p_corr.arrets = c_arrets
+                                        p_corr.tirs_subis = c_subis
+                                        p_corr.buts_encaisses = c_encaisses
+                                        p_corr.cartons_jaunes = c_jaune
+                                        p_corr.buts = c_buts
+                                        p_corr.tirs = c_tirs
+                                        p_corr.exclusions_2min = c_2min
+                                        manager.sauvegarder_donnees()
+                                        st.success("Correction enregistrée avec succès !")
+                                        st.rerun()
 
                     st.write("")
                     if st.button("🏁 Archiver définitivement ce match et réinitialiser", type="primary", use_container_width=True, key="btn_archiver_match"):
@@ -773,7 +785,6 @@ def run_staff_app(equipe_assignee):
                             journal_actions=st.session_state.get("journal_actions_match", []),
                             commentaires_staff=st.session_state.get("commentaires_staff_match", [])
                         )
-                        # Réinitialisation uniquement à l'archivage explicite
                         st.session_state.match_en_cours = False
                         st.session_state.attaques_adversaires_match = {"Yago": 0, "Yego": 0, "Montpellier": 0, "Croisé": 0, "Autre": 0}
                         st.toast("Le match a été archivé avec succès !", icon="✅")
@@ -1038,51 +1049,54 @@ def run_staff_app(equipe_assignee):
 
             with sub_tab_joueuses:
                 noms = list(manager.joueuses.keys())
-                joueuse_choisie = st.selectbox("Sélectionner une joueuse", noms, key="select_saison_joueuse")
-                p = manager.joueuses[joueuse_choisie]
-                
-                st.markdown(f"### 🎽 #{p.numero} - {p.nom} *({p.poste})*")
-                
-                if not p.historique_matchs:
-                    st.info("Aucune donnée de match enregistrée pour cette joueuse.")
-                else:
-                    nb_matchs = len(p.historique_matchs)
+                if noms:
+                    joueuse_choisie = st.selectbox("Sélectionner une joueuse", noms, key="select_saison_joueuse")
+                    p = manager.joueuses[joueuse_choisie]
                     
-                    if isinstance(p, JoueuseDeChamp):
-                        tot_buts = sum(m["buts"] for m in p.historique_matchs)
-                        tot_tirs = sum(m["tirs"] for m in p.historique_matchs)
-                        tot_pd = sum(m["passes_decisives"] for m in p.historique_matchs)
-                        tot_int = sum(m["interceptions"] for m in p.historique_matchs)
-                        eff_globale = round((tot_buts / tot_tirs * 100), 1) if tot_tirs > 0 else 0.0
-
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("Matchs joués", nb_matchs)
-                        c2.metric("Total Buts / Tirs", f"{tot_buts} / {tot_tirs}", f"{eff_globale}% réussite")
-                        c3.metric("Passes Décisives", tot_pd)
-                        c4.metric("Interceptions", tot_int)
-
-                    elif isinstance(p, Gardienne):
-                        tot_arrets = sum(m["arrets"] for m in p.historique_matchs)
-                        tot_subis = sum(m["tirs_subis"] for m in p.historique_matchs)
-                        tot_enc = sum(m["buts_encaisses"] for m in p.historique_matchs)
-                        pct_global = round((tot_arrets / tot_subis * 100), 1) if tot_subis > 0 else 0.0
-
-                        c1, c2, c3, c4 = st.columns(4)
-                        c1.metric("Matchs joués", nb_matchs)
-                        c2.metric("Arrêts / Tirs Subis", f"{tot_arrets} / {tot_subis}", f"{pct_global}% arrêts")
-                        c3.metric("Buts Encaissés", tot_enc)
-                        c4.metric("Moyenne arrêts / match", round(tot_arrets / nb_matchs, 1))
-
-                    st.divider()
-                    st.subheader("📅 Détail match par match")
+                    st.markdown(f"### 🎽 #{p.numero} - {p.nom} *({p.poste})*")
                     
-                    historique_propre = []
-                    for m in p.historique_matchs:
-                        ligne = {k: v for k, v in m.items() if k not in ["score_equipe", "score_adversaire", "journal_actions", "commentaires_staff"]}
-                        ligne["Score"] = f"{m.get('score_equipe', '-')} - {m.get('score_adversaire', '-')}"
-                        historique_propre.append(ligne)
+                    if not p.historique_matchs:
+                        st.info("Aucune donnée de match enregistrée pour cette joueuse.")
+                    else:
+                        nb_matchs = len(p.historique_matchs)
                         
-                    st.dataframe(historique_propre, use_container_width=True, hide_index=True)
+                        if isinstance(p, JoueuseDeChamp):
+                            tot_buts = sum(m["buts"] for m in p.historique_matchs)
+                            tot_tirs = sum(m["tirs"] for m in p.historique_matchs)
+                            tot_pd = sum(m["passes_decisives"] for m in p.historique_matchs)
+                            tot_int = sum(m["interceptions"] for m in p.historique_matchs)
+                            eff_globale = round((tot_buts / tot_tirs * 100), 1) if tot_tirs > 0 else 0.0
+
+                            c1, c2, c3, c4 = st.columns(4)
+                            c1.metric("Matchs joués", nb_matchs)
+                            c2.metric("Total Buts / Tirs", f"{tot_buts} / {tot_tirs}", f"{eff_globale}% réussite")
+                            c3.metric("Passes Décisives", tot_pd)
+                            c4.metric("Interceptions", tot_int)
+
+                        elif isinstance(p, Gardienne):
+                            tot_arrets = sum(m["arrets"] for m in p.historique_matchs)
+                            tot_subis = sum(m["tirs_subis"] for m in p.historique_matchs)
+                            tot_enc = sum(m["buts_encaisses"] for m in p.historique_matchs)
+                            pct_global = round((tot_arrets / tot_subis * 100), 1) if tot_subis > 0 else 0.0
+
+                            c1, c2, c3, c4 = st.columns(4)
+                            c1.metric("Matchs joués", nb_matchs)
+                            c2.metric("Arrêts / Tirs Subis", f"{tot_arrets} / {tot_subis}", f"{pct_global}% arrêts")
+                            c3.metric("Buts Encaissés", tot_enc)
+                            c4.metric("Moyenne arrêts / match", round(tot_arrets / nb_matchs, 1))
+
+                        st.divider()
+                        st.subheader("📅 Détail match par match")
+                        
+                        historique_propre = []
+                        for m in p.historique_matchs:
+                            ligne = {k: v for k, v in m.items() if k not in ["score_equipe", "score_adversaire", "journal_actions", "commentaires_staff"]}
+                            ligne["Score"] = f"{m.get('score_equipe', '-')} - {m.get('score_adversaire', '-')}"
+                            historique_propre.append(ligne)
+                            
+                        st.dataframe(historique_propre, use_container_width=True, hide_index=True)
+                else:
+                    st.info("Aucune joueuse disponible.")
 
     # ==========================================
     # 4. ÉCRAN : GESTION DE L'EFFECTIF
@@ -1092,7 +1106,7 @@ def run_staff_app(equipe_assignee):
             aller_a("accueil")
         st.header("👥 Gestion de l'Effectif")
         if manager.joueuses:
-            for nom, joueuse in manager.joueuses.items():
+            for nom, joueuse in list(manager.joueuses.items()):
                 col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
                 col1.write(f"**{nom}**")
                 col2.write(f"Poste : {joueuse.poste}")
