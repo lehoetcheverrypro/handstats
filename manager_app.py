@@ -53,9 +53,8 @@ def afficher_espace_manager():
     # En-tête combiné Titre + Profil
     afficher_en_tete_avec_profil("👔 Espace Club Manager")
     
-    st.info("Bienvenue dans le panneau de direction. Suivez en un coup d'œil les performances globales de toutes les équipes du club et exportez le bilan officiel.")
+    st.info("Bienvenue dans le panneau de direction. Suivez en un coup d'œil les performances globales de toutes les équipes du club et gérez les accès.")
 
-    # Restauration des 4 onglets avec la configuration du logo
     tab_stats_globales, tab_equipes, tab_staffs, tab_club_config = st.tabs([
         "📊 Tableau de Bord & Bilan",
         "🛡️ Gestion des Équipes", 
@@ -92,7 +91,7 @@ def afficher_espace_manager():
                 "Moy. Buts / Match": stats["moy_buts"]
             })
 
-        # Métriques globales du club en haut
+        # Métriques globales du club
         col_g1, col_g2, col_g3, col_g4 = st.columns(4)
         col_g1.metric("Équipes Actives", len(equipes))
         col_g2.metric("Total Matchs Joués", total_matchs_club)
@@ -142,14 +141,33 @@ def afficher_espace_manager():
             df_synthese = pd.DataFrame(synthese_data).set_index("Équipe")
             st.bar_chart(df_synthese[["Moy. Buts / Match"]])
 
-    # --- ONGLET 2 : GESTION DES ÉQUIPES ---
+    # --- ONGLET 2 : GESTION DES ÉQUIPES (AJOUT & SUPPRESSION) ---
     with tab_equipes:
-        st.subheader("🛡️ Équipes enregistrées dans le club")
+        st.subheader("🛡️ Gestion des Équipes du Club")
         
-        for eq in st.session_state.club_equipes:
-            st.write(f"- 🤾‍♀️ **{eq}**")
+        # Section Suppression d'équipe
+        if st.session_state.get("club_equipes"):
+            st.markdown("### 🗑️ Supprimer une équipe existante")
+            with st.form("form_supprimer_equipe"):
+                equipe_a_supprimer = st.selectbox("Sélectionner l'équipe à supprimer", st.session_state.club_equipes)
+                submit_supp_eq = st.form_submit_button("Supprimer cette équipe", type="secondary")
+                
+                if submit_supp_eq:
+                    if equipe_a_supprimer in st.session_state.club_equipes:
+                        st.session_state.club_equipes.remove(equipe_a_supprimer)
+                        # Optionnel : supprimer le fichier JSON associé s'il existe
+                        nom_fichier = f"effectif_{equipe_a_supprimer.replace(' ', '_').replace('-', '')}.json"
+                        if os.path.exists(nom_fichier):
+                            try:
+                                os.remove(nom_fichier)
+                            except Exception:
+                                pass
+                        st.success(f"L'équipe '{equipe_a_supprimer}' a été supprimée avec succès !")
+                        st.rerun()
 
         st.markdown("---")
+        
+        # Section Ajout d'équipe
         with st.form("form_creer_equipe"):
             st.subheader("➕ Créer une nouvelle équipe")
             nouvelle_eq = st.text_input("Nom de l'équipe (ex: Loisirs M, -13F...)")
@@ -163,12 +181,33 @@ def afficher_espace_manager():
                 else:
                     st.error("Nom d'équipe invalide ou déjà existant.")
 
-    # --- ONGLET 3 : GESTION DES STAFFS ---
+    # --- ONGLET 3 : GESTION DES STAFFS (AJOUT & SUPPRESSION) ---
     with tab_staffs:
-        st.subheader("👥 Création et affectation des profils Staff")
+        st.subheader("👥 Gestion des profils Staff et Entraîneurs")
         
+        # Section Suppression de staff
+        staffs_existants = [uname for uname, data in st.session_state.users_db.items() if data["role"] == "staff"]
+        if staffs_existants:
+            st.markdown("### 🗑️ Révoquer un accès staff")
+            with st.form("form_supprimer_staff"):
+                staff_a_supprimer = st.selectbox(
+                    "Sélectionner l'identifiant du staff à supprimer", 
+                    staffs_existants,
+                    format_func=lambda x: f"{st.session_state.users_db[x]['nom']} (ID: {x} - Équipe: {st.session_state.users_db[x]['equipe']})"
+                )
+                submit_supp_staff = st.form_submit_button("Révoquer cet accès", type="secondary")
+                
+                if submit_supp_staff:
+                    if staff_a_supprimer in st.session_state.users_db:
+                        del st.session_state.users_db[staff_a_supprimer]
+                        st.success(f"L'accès pour l'identifiant '{staff_a_supprimer}' a été révoqué avec succès !")
+                        st.rerun()
+
+        st.markdown("---")
+
+        # Section Ajout de staff
         with st.form("form_create_staff_admin"):
-            st.subheader("Nouveau compte Staff / Entraîneur")
+            st.subheader("➕ Nouveau compte Staff / Entraîneur")
             col1, col2 = st.columns(2)
             with col1:
                 new_username = st.text_input("Identifiant de connexion (ex: thomas_seniors)")
@@ -188,19 +227,14 @@ def afficher_espace_manager():
                         "equipe": new_equipe
                     }
                     st.success(f"Compte staff créé pour **{new_nom}** assigné à l'équipe **{new_equipe}** !")
+                    st.rerun()
                 else:
                     st.error("Identifiant vide ou déjà pris dans la base de données.")
-
-        st.markdown("---")
-        st.markdown("### 📋 Liste des accès actifs de l'encadrement")
-        for uname, data in st.session_state.users_db.items():
-            if data["role"] == "staff":
-                st.write(f"- 🤾‍♀️ **{data['nom']}** (ID: `{uname}`) ➔ Équipe : **{data['equipe']}**")
 
     # --- ONGLET 4 : CONFIGURATION DU CLUB & LOGO ---
     with tab_club_config:
         st.subheader("⚙️ Identité Visuelle & Logo du Club")
-        st.write("Téléchargez le logo officiel de votre club. Il sera automatiquement intégré en haut de tous les rapports PDF (feuilles de match, rapports chronologiques et bilan global).")
+        st.write("Téléchargez le logo officiel de votre club pour l'intégrer sur les rapports PDF.")
         
         logo_path = "logo_club.png"
         if os.path.exists(logo_path):
@@ -218,8 +252,6 @@ def afficher_espace_manager():
 
         st.markdown("---")
         st.subheader("💾 Sauvegarde & Restauration des Données du Club")
-        st.write("Téléchargez une archive complète contenant toutes les données du club (effectifs, archives de matchs, logo) pour sécuriser vos données.")
-        
         if st.button("📦 Télécharger la Sauvegarde Complète (.zip)", use_container_width=True):
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
