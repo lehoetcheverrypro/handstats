@@ -193,7 +193,7 @@ def afficher_espace_manager():
                 staff_a_supprimer = st.selectbox(
                     "Sélectionner l'identifiant du staff à supprimer", 
                     staffs_existants,
-                    format_func=lambda x: f"{st.session_state.users_db[x]['nom']} (ID: {x} - Équipe: {st.session_state.users_db[x]['equipe']})"
+                    format_func=lambda x: f"{st.session_state.users_db[x]['nom']} (ID: {x} - Équipes: {', '.join(st.session_state.users_db[x].get('equipes', [st.session_state.users_db[x].get('equipe', 'Aucune')]))})"
                 )
                 submit_supp_staff = st.form_submit_button("Révoquer cet accès", type="secondary")
                 
@@ -205,7 +205,7 @@ def afficher_espace_manager():
 
         st.markdown("---")
 
-        # Section Ajout de staff
+        # Section Ajout de staff (Multi-équipe)
         with st.form("form_create_staff_admin"):
             st.subheader("➕ Nouveau compte Staff / Entraîneur")
             col1, col2 = st.columns(2)
@@ -215,7 +215,8 @@ def afficher_espace_manager():
             with col2:
                 new_nom = st.text_input("Nom / Prénom du coach")
                 equipes_dispos = st.session_state.get("club_equipes", ["Séniors M", "Séniors F", "-18M", "-15F"])
-                new_equipe = st.selectbox("Équipe assignée", equipes_dispos)
+                # Utilisation d'un multiselect pour assigner plusieurs équipes à un coach
+                new_equipes = st.multiselect("Équipes assignées (Multi-équipe)", equipes_dispos)
             
             submit_staff = st.form_submit_button("Créer l'accès staff")
             if submit_staff:
@@ -224,9 +225,9 @@ def afficher_espace_manager():
                         "password": new_password,
                         "role": "staff",
                         "nom": new_nom,
-                        "equipe": new_equipe
+                        "equipes": new_equipes
                     }
-                    st.success(f"Compte staff créé pour **{new_nom}** assigné à l'équipe **{new_equipe}** !")
+                    st.success(f"Compte staff créé pour **{new_nom}** assigné aux équipes : **{', '.join(new_equipes)}** !")
                     st.rerun()
                 else:
                     st.error("Identifiant vide ou déjà pris dans la base de données.")

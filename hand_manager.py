@@ -214,3 +214,52 @@ class EquipeManager:
                 j.arrets = 0; j.tirs_subis = 0; j.buts_encaisses = 0; j.buts = 0; j.tirs = 0
 
         self.sauvegarder_donnees()
+
+    def sauvegarder_commentaire_post_match(self, nom_match, texte_bilan):
+        """Enregistre ou met à jour le bilan écrit post-match dans l'historique."""
+        for j in self.joueuses.values():
+            for m in j.historique_matchs:
+                if m.get("match") == nom_match:
+                    m["bilan_post_match"] = texte_bilan
+        self.sauvegarder_donnees()
+
+    @staticmethod
+    def recuperer_toutes_les_joueuses_du_club(club_equipes):
+        """
+        Scanne les fichiers JSON de toutes les équipes du club 
+        pour retourner un dictionnaire global {nom_joueuse: {"equipe": nom_eq, "objet": instance_joueuse}}
+        Utile pour gérer les surclassements.
+        """
+        joueuses_club = {}
+        for eq in club_equipes:
+            nom_fichier = f"effectif_{eq.replace(' ', '_').replace('-', '')}.json"
+            dossier_script = os.path.dirname(os.path.abspath(__file__))
+            chemin_complet = os.path.join(dossier_script, nom_fichier)
+            
+            if os.path.exists(chemin_complet):
+                try:
+                    with open(chemin_complet, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        for nom, d in data.items():
+                            # On évite les doublons stricts si déjà vu
+                            if nom not in joueuses_club:
+                                joueuses_club[nom] = {
+                                    "equipe_origine": eq,
+                                    "poste": d.get("poste"),
+                                    "numero": d.get("numero"),
+                                    "type": d.get("type")
+                                }
+                except Exception:
+                    pass
+        return joueuses_club
+
+    def transferer_joueuse(self, nom_joueuse, autre_manager):
+        if nom_joueuse in self.joueuses:
+            joueuse_obj = self.joueuses[nom_joueuse]
+            # On l'ajoute dans l'autre équipe
+            autre_manager.joueuses[nom_joueuse] = joueuse_obj
+            autre_manager.sauvegarder_donnees()
+            # On la supprime de l'équipe actuelle
+            self.supprimer_joueuse(nom_joueuse)
+            return True
+        return False

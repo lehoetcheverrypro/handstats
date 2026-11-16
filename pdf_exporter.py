@@ -8,11 +8,18 @@ from reportlab.platypus import (
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
+def detecter_genre(nom_equipe):
+    nom_l = str(nom_equipe).lower()
+    if any(k in nom_l for k in ["f", "fem", "fille", "féminine"]):
+        return "F"
+    elif any(k in nom_l for k in ["m", "garçon", "masc", "masculin", "h"]):
+        return "M"
+    return "F"
+
 def creer_bandeau_en_tete(club_nom, equipe_nom, styles):
     """Crée un bandeau professionnel moderne avec le club, l'équipe et le logo."""
     logo_path = "logo_club.png"
     
-    # Styles typographiques pour le bandeau professionnel
     style_club = ParagraphStyle(
         'BandeauClub', parent=styles['Normal'], 
         fontName='Helvetica-Bold', fontSize=13, leading=15, textColor=colors.white
@@ -38,10 +45,9 @@ def creer_bandeau_en_tete(club_nom, equipe_nom, styles):
     else:
         cell_right = Paragraph("", styles['Normal'])
 
-    # Largeur totale A4 avec marges de 25pt = 545 points
     bandeau_table = Table([[text_content, cell_right]], colWidths=[430, 115])
     bandeau_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#0B2545")), # Bleu marine pro
+        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#0B2545")),
         ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('TOPPADDING', (0,0), (-1,-1), 8),
         ('BOTTOMPADDING', (0,0), (-1,-1), 8),
@@ -51,6 +57,20 @@ def creer_bandeau_en_tete(club_nom, equipe_nom, styles):
     return bandeau_table
 
 def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardiennes, attaques_adversaires=None, club_nom="Mon Club", equipe_nom="Équipe"):
+    genre = detecter_genre(equipe_nom)
+    if genre == "M":
+        titre_champ = "COMPOSITION DE L'ÉQUIPE — JOUEURS DE CHAMP"
+        col_nom_j = "Nom du Joueur"
+        titre_gard = "COMPOSITION DE L'ÉQUIPE — GARDIENS"
+        col_nom_g = "Nom du Gardien"
+        label_champ_col = "Joueur"
+    else:
+        titre_champ = "COMPOSITION DE L'ÉQUIPE — JOUEUSES DE CHAMP"
+        col_nom_j = "Nom de la Joueuse"
+        titre_gard = "COMPOSITION DE L'ÉQUIPE — GARDIENNES"
+        col_nom_g = "Nom de la Gardienne"
+        label_champ_col = "Joueuse"
+
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -107,14 +127,14 @@ def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardi
     story.append(t_score)
     story.append(Spacer(1, 15))
     
-    story.append(Paragraph("COMPOSITION DE L'ÉQUIPE — JOUEUSES DE CHAMP", h1_style))
-    headers_ffh_c = ["N°", "Nom de la Joueuse", "Poste", "Buts", "Avert. (Jaune)", "Exclusions (2min)"]
+    story.append(Paragraph(titre_champ, h1_style))
+    headers_ffh_c = ["N°", col_nom_j, "Poste", "Buts", "Avert. (Jaune)", "Exclusions (2min)"]
     table_data_ffh_c = [[Paragraph(h, cell_header_style) for h in headers_ffh_c]]
     
     for row in lignes_champ:
         table_data_ffh_c.append([
             Paragraph(str(row.get("N°", "")), cell_style),
-            Paragraph(str(row.get("Joueuse", "")), ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
+            Paragraph(str(row.get("Joueuse", row.get("Joueur", ""))), ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
             Paragraph(str(row.get("Poste", "")), cell_style),
             Paragraph(str(row.get("Buts", 0)), cell_style),
             Paragraph(str(row.get("🟨", 0)), cell_style),
@@ -134,13 +154,13 @@ def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardi
     story.append(Spacer(1, 12))
     
     if lignes_gardiennes:
-        story.append(Paragraph("COMPOSITION DE L'ÉQUIPE — GARDIENNES", h1_style))
-        headers_ffh_g = ["N°", "Nom de la Gardienne", "Arrêts", "Tirs Subis", "% Arrêts", "Buts Encaissés", "Avert.", "2min"]
+        story.append(Paragraph(titre_gard, h1_style))
+        headers_ffh_g = ["N°", col_nom_g, "Arrêts", "Tirs Subis", "% Arrêts", "Buts Encaissés", "Avert.", "2min"]
         table_data_ffh_g = [[Paragraph(h, cell_header_style) for h in headers_ffh_g]]
         for row in lignes_gardiennes:
             table_data_ffh_g.append([
                 Paragraph(str(row.get("N°", "")), cell_style),
-                Paragraph(str(row.get("Gardienne", "")), ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
+                Paragraph(str(row.get("Gardienne", row.get("Gardien", ""))), ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
                 Paragraph(str(row.get("Arrêts", 0)), cell_style),
                 Paragraph(str(row.get("Tirs Subis", 0)), cell_style),
                 Paragraph(str(row.get("% Arrêts", "0%")), cell_style),
@@ -171,19 +191,19 @@ def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardi
     story.append(Paragraph("Bilan Statistique & Tactique — " + nom_match, title_style))
     story.append(Spacer(1, 15))
     
-    story.append(Paragraph("Bilan Collectif Avancé — Joueuses de Champ", h1_style))
-    headers_c = ["N°", "Joueuse", "Poste", "Buts/Tirs", "Réussite", "PD", "Pertes (P/F)", "Duels Off", "Duels Déf", "Int", "Neut", "Prov"]
+    story.append(Paragraph(f"Bilan Collectif Avancé — {label_champ_col}s de Champ", h1_style))
+    headers_c = ["N°", label_champ_col, "Poste", "Buts/Tirs", "Réussite", "PD", "Pertes (P/F)", "Duels Off", "Duels Déf", "Int", "Neut", "Prov"]
     table_data_c = [[Paragraph(h, cell_header_style) for h in headers_c]]
     
     for row in lignes_champ:
         table_data_c.append([
             Paragraph(str(row.get("N°", "")), cell_style),
-            Paragraph(str(row.get("Joueuse", "")), ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
+            Paragraph(str(row.get("Joueuse", row.get("Joueur", ""))), ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
             Paragraph(str(row.get("Poste", "")), cell_style),
             Paragraph(f"{row.get('Buts', 0)}/{row.get('Tirs', 0)}", cell_style),
             Paragraph(str(row.get("Réussite", "0%")), cell_style),
             Paragraph(str(row.get("Passes D.", 0)), cell_style),
-            f"{row.get('Perte (Passe', 0) if 'Perte (Passe' in row else row.get('Perte (Passe)', 0)}/{row.get('Perte (Faute', 0) if 'Perte (Faute' in row else row.get('Perte (Faute)', 0)}",
+            f"{row.get('Perte (Passe', row.get('Perte (Passe)', 0))}/{row.get('Perte (Faute', row.get('Perte (Faute)', 0))}",
             Paragraph(str(row.get("Duels Off", "0/0")), cell_style),
             Paragraph(str(row.get("Duels Déf", "0/0")), cell_style),
             Paragraph(str(row.get("Interceptions", 0)), cell_style),
@@ -201,21 +221,6 @@ def generer_pdf_match(nom_match, score_eq, score_adv, lignes_champ, lignes_gardi
         ('BOTTOMPADDING', (0,0), (-1,-1), 3),
     ]))
     story.append(t_champ)
-    
-    if attaques_adversaires:
-        story.append(Spacer(1, 15))
-        story.append(Paragraph("Analyse Tactique — Attaques Adverses", h1_style))
-        att_data = [[Paragraph("Système d'Attaque Adverse", cell_header_style), Paragraph("Nombre d'Utilisations", cell_header_style)]]
-        for sys_nom, count in attaques_adversaires.items():
-            att_data.append([Paragraph(sys_nom, cell_style), Paragraph(str(count), cell_style)])
-        t_att = Table(att_data, colWidths=[270, 275])
-        t_att.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), ffh_red),
-            ('GRID', (0,0), (-1,-1), 0.5, border_color),
-            ('TOPPADDING', (0,0), (-1,-1), 4),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 4)
-        ]))
-        story.append(t_att)
 
     doc.build(story)
     buffer.seek(0)

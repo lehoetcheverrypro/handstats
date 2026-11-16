@@ -1,12 +1,12 @@
 import streamlit as st
 
 def init_users_db():
-    """Initialise une base de données utilisateurs de test dans le session_state si elle n'existe pas."""
+    """Initialise une base de données utilisateurs avec support multi-équipe."""
     if "users_db" not in st.session_state:
         st.session_state.users_db = {
-            "admin": {"password": "123", "role": "manager", "nom": "Direction du Club", "club": "Bordeaux Étudiants Club", "equipe": None},
-            "leho": {"password": "123", "role": "staff", "nom": "Lého", "club": "Bordeaux Étudiants Club", "equipe": "Séniors M"},
-            "coach_f": {"password": "123", "role": "staff", "nom": "Marc", "club": "Bordeaux Étudiants Club", "equipe": "-18M"}
+            "admin": {"password": "123", "role": "manager", "nom": "Direction du Club", "club": "Bordeaux Étudiants Club", "equipes": []},
+            "leho": {"password": "123", "role": "staff", "nom": "Lého", "club": "Bordeaux Étudiants Club", "equipes": ["Séniors M", "Séniors F"]},
+            "coach_f": {"password": "123", "role": "staff", "nom": "Marc", "club": "Bordeaux Étudiants Club", "equipes": ["-18M"]}
         }
 
     if "user_session" not in st.session_state:
@@ -16,7 +16,8 @@ def init_users_db():
             "role": None,
             "nom": "",
             "club": "Bordeaux Étudiants Club",
-            "equipe": None
+            "equipes": [],
+            "equipe_active": None
         }
 
 
@@ -35,13 +36,17 @@ def ecran_connexion():
             db = st.session_state.users_db
             if username in db and db[username]["password"] == password:
                 user_info = db[username]
+                equipes_liste = user_info.get("equipes", [])
+                
                 st.session_state.user_session = {
                     "logged_in": True,
                     "username": username,
                     "role": user_info["role"],
                     "nom": user_info["nom"],
                     "club": user_info.get("club", "Bordeaux Étudiants Club"),
-                    "equipe": user_info["equipe"]
+                    "equipes": equipes_liste,
+                    # Si une seule équipe, on l'active directement. Sinon None pour forcer le choix.
+                    "equipe_active": equipes_liste[0] if len(equipes_liste) == 1 else None
                 }
                 st.success(f"Bienvenue, {user_info['nom']} !")
                 st.rerun()
@@ -50,14 +55,13 @@ def ecran_connexion():
 
     with st.expander("ℹ️ Comptes de test par défaut"):
         st.markdown("- **Manager** : `admin` / `123`")
-        st.markdown("- **Staff Séniors M** : `leho` / `123`")
-        st.markdown("- **Staff -18M** : `coach_f` / `123`")
+        st.markdown("- **Staff (Multi-équipe)** : `leho` / `123` *(Gère Séniors M et Séniors F)*")
+        st.markdown("- **Staff (-18M)** : `coach_f` / `123`")
 
 def afficher_en_tete_avec_profil(titre_principal):
     """Affiche un en-tête propre avec le titre à gauche et le bouton de profil pop-over à droite."""
     session = st.session_state.user_session
     
-    # Petit espace de sécurité invisible au-dessus pour éviter toute coupe
     st.write("") 
     
     col_title, col_profil = st.columns([3.4, 1.6])
@@ -73,8 +77,28 @@ def afficher_en_tete_avec_profil(titre_principal):
             st.markdown(f"**Rôle :** {'Club Manager' if session['role'] == 'manager' else 'Staff / Entraîneur'}")
             
             if session['role'] == 'staff':
-                st.markdown(f"**Équipe entraînée :** `{session['equipe']}`")
-                st.markdown(f"**Nombre d'équipes gérées :** 1")
+                st.markdown(f"**Équipe active :** `{session.get('equipe_active', 'Aucune')}`")
+                st.markdown(f"**Équipes gérées :** `{', '.join(session.get('equipes', []))}`")
+                
+                # --- RACCOURCI DE CHANGEMENT D'ÉQUIPE ACTIVE ---
+                equipes_gerees = session.get('equipes', [])
+                if len(equipes_gerees) > 1:
+                    st.markdown("---")
+                    st.markdown("#### 🔄 Changer d'équipe active")
+                    equipe_actuelle = session.get('equipe_active')
+                    
+                    nouvelle_equipe = st.selectbox(
+                        "Basculer vers :",
+                        equipes_gerees,
+                        index=equipes_gerees.index(equipe_actuelle) if equipe_actuelle in equipes_gerees else 0,
+                        key="popover_switch_equipe"
+                    )
+                    
+                    if nouvelle_equipe != equipe_actuelle:
+                        if st.button("Confirmer le changement", type="primary", use_container_width=True):
+                            st.session_state.user_session['equipe_active'] = nouvelle_equipe
+                            st.rerun()
+
             elif session['role'] == 'manager':
                 nb_eq = len(st.session_state.get("club_equipes", ["Séniors M", "Séniors F", "-18M", "-15F"]))
                 st.markdown(f"**Équipes enregistrées au club :** `{nb_eq}`")
@@ -99,6 +123,6 @@ def afficher_en_tete_avec_profil(titre_principal):
             st.markdown("---")
             if st.button("🚪 Se déconnecter", type="primary", use_container_width=True):
                 st.session_state.user_session = {
-                    "logged_in": False, "username": None, "role": None, "nom": "", "equipe": None
+                    "logged_in": False, "username": None, "role": None, "nom": "", "club": "Bordeaux Étudiants Club", "equipes": [], "equipe_active": None
                 }
                 st.rerun()
