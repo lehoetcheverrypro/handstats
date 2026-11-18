@@ -1750,12 +1750,43 @@ def run_staff_app(equipe_assignee):
 
             for nom, joueuse in list(manager.joueuses.items()):
                 with st.container(border=True):
-                    col_info1, col_info2, col_info3, col_transfert, col_suppr = st.columns([2, 1.5, 1.5, 2.5, 0.8])
+                    col_info1, col_info2, col_info3, col_mod, col_transfert, col_suppr = st.columns([2, 1.2, 1, 1.2, 2, 0.8])
                     
                     col_info1.write(f"**{nom}**")
                     col_info2.write(f"Poste : {joueuse.poste}")
                     col_info3.write(f"N° {joueuse.numero}")
                     
+                    with col_mod:
+                        with st.popover("✏️ Modifier"):
+                            st.markdown(f"**Modifier le profil de {nom}**")
+                            with st.form(key=f"form_modif_joueuse_{equipe_assignee}_{nom}"):
+                                nouveau_nom = st.text_input("Nom / Prénom", value=joueuse.nom)
+                                
+                                # Sécurisation de l'index du poste dans la liste
+                                index_poste_actuel = L["postes_possibles"].index(joueuse.poste) if joueuse.poste in L["postes_possibles"] else 0
+                                nouveau_poste = st.selectbox("Poste", L["postes_possibles"], index=index_poste_actuel)
+                                
+                                nouveau_numero = st.number_input("Numéro de maillot", min_value=1, max_value=99, value=int(joueuse.numero))
+                                
+                                if st.form_submit_button("Enregistrer les modifications", type="primary", use_container_width=True):
+                                    if not nouveau_nom.strip():
+                                        st.error("Le nom ne peut pas être vide.")
+                                    elif nouveau_nom != nom and nouveau_nom in manager.joueuses:
+                                        st.error(f"Un(e) {L['joueur']} portant le nom '{nouveau_nom}' existe déjà.")
+                                    else:
+                                        # Mise à jour des attributs de l'objet
+                                        joueuse.poste = nouveau_poste
+                                        joueuse.numero = nouveau_numero
+                                        
+                                        # Si le nom a changé, il faut gérer la clé dans le dictionnaire manager.joueuses
+                                        if nouveau_nom != nom:
+                                            manager.joueuses[nouveau_nom] = joueuse
+                                            del manager.joueuses[nom]
+                                        
+                                        manager.sauvegarder_donnees()
+                                        st.success("Profil mis à jour avec succès !")
+                                        st.rerun()
+
                     with col_transfert:
                         if autres_equipes_club:
                             with st.popover("🔄 Transférer"):
@@ -1785,7 +1816,7 @@ def run_staff_app(equipe_assignee):
                             manager.supprimer_joueuse(nom)
                             st.rerun()
         else:
-            st.info(f"Aucun(e) {L['joueur']} enregistré(e).")
+            st.info(f"Aucun(e) {L['joueur']} enregistré(e)[cite: 1].")
         
         st.divider()
         with st.form(key=f"form_ajout_joueuse_{equipe_assignee}"):
