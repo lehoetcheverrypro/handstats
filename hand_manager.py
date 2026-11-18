@@ -147,23 +147,39 @@ class EquipeManager:
             except Exception as e:
                 print(f"Erreur lors du chargement : {e}")
 
-    def archiver_match(self, nom_match, attaques_adv_data=None, joueuses_actives=None, journal_actions=None, commentaires_staff=None):
+    def archiver_match(self, nom_match, attaques_adv_data=None, joueuses_actives=None, journal_actions=None, commentaires_staff=None, numeros_match=None, pretes_dict=None):
+        if numeros_match is None:
+            numeros_match = {}
+        if pretes_dict is None:
+            pretes_dict = {}
+
         lignes_champ = [j for j in self.joueuses.values() if isinstance(j, JoueuseDeChamp) and (joueuses_actives is None or j.nom in joueuses_actives)]
         lignes_gard = [j for j in self.joueuses.values() if isinstance(j, Gardienne) and (joueuses_actives is None or j.nom in joueuses_actives)]
         
+        # On ajoute les prêtées actives pour le calcul du score de l'équipe
+        for j_p in pretes_dict.values():
+            if joueuses_actives is None or j_p.nom in joueuses_actives:
+                if isinstance(j_p, JoueuseDeChamp):
+                    lignes_champ.append(j_p)
+                else:
+                    lignes_gard.append(j_p)
+
         score_eq = sum(j.buts for j in lignes_champ)
         for g in lignes_gard:
             score_eq += g.buts
         score_adv = sum(g.buts_encaisses for g in lignes_gard)
 
-        for j in self.joueuses.values():
+        # 1. Archivage pour l'effectif principal
+        for nom, j in self.joueuses.items():
             if joueuses_actives is not None and j.nom not in joueuses_actives:
                 continue
 
+            numero_a_archiver = numeros_match.get(j.nom, j.numero)
             match_common_data = {
                 "match": nom_match,
                 "score_equipe": score_eq,
                 "score_adversaire": score_adv,
+                "numero_match": numero_a_archiver,
                 "attaques_adversaires": attaques_adv_data or {},
                 "journal_actions": journal_actions or [],
                 "commentaires_staff": commentaires_staff or []
@@ -172,31 +188,20 @@ class EquipeManager:
             if isinstance(j, JoueuseDeChamp):
                 match_data = {
                     **match_common_data,
-                    "buts": j.buts,
-                    "tirs": j.tirs,
-                    "passes_decisives": j.passes_decisives,
-                    "pertes_passe": j.pertes_de_balles_passe,
-                    "pertes_faute": j.pertes_de_balles_faute,
-                    "duels_off_gagnes": j.duels_off_gagnes,
-                    "duels_off_perdus": j.duels_off_perdus,
-                    "duels_def_gagnes": j.duels_def_gagnes,
-                    "duels_def_perdus": j.duels_def_perdus,
-                    "neutralisations": j.neutralisations,
-                    "interceptions": j.interceptions,
+                    "buts": j.buts, "tirs": j.tirs, "passes_decisives": j.passes_decisives,
+                    "pertes_passe": j.pertes_de_balles_passe, "pertes_faute": j.pertes_de_balles_faute,
+                    "duels_off_gagnes": j.duels_off_gagnes, "duels_off_perdus": j.duels_off_perdus,
+                    "duels_def_gagnes": j.duels_def_gagnes, "duels_def_perdus": j.duels_def_perdus,
+                    "neutralisations": j.neutralisations, "interceptions": j.interceptions,
                     "balles_provoquees": j.pertes_balles_provoquees,
-                    "cartons_jaunes": j.cartons_jaunes,
-                    "exclusions_2min": j.exclusions_2min,
+                    "cartons_jaunes": j.cartons_jaunes, "exclusions_2min": j.exclusions_2min,
                 }
             else:
                 match_data = {
                     **match_common_data,
-                    "arrets": j.arrets,
-                    "tirs_subis": j.tirs_subis,
-                    "buts_encaisses": j.buts_encaisses,
-                    "buts": j.buts,
-                    "tirs": j.tirs,
-                    "cartons_jaunes": j.cartons_jaunes,
-                    "exclusions_2min": j.exclusions_2min,
+                    "arrets": j.arrets, "tirs_subis": j.tirs_subis,
+                    "buts_encaisses": j.buts_encaisses, "buts": j.buts, "tirs": j.tirs,
+                    "cartons_jaunes": j.cartons_jaunes, "exclusions_2min": j.exclusions_2min,
                 }
             
             j.historique_matchs.append(match_data)
@@ -214,6 +219,76 @@ class EquipeManager:
                 j.arrets = 0; j.tirs_subis = 0; j.buts_encaisses = 0; j.buts = 0; j.tirs = 0
 
         self.sauvegarder_donnees()
+
+        # 2. Archivage AUSSI pour les joueuses prêtées/surclassées dans leur propre fichier d'équipe d'origine
+        club_equipes = ["Séniors M", "Séniors F", "-18M", "-15F"]
+        toutes_du_club = self.recuperer_toutes_les_joueuses_du_club(club_equipes)
+
+        for nom_p, j_p in pretes_dict.items():
+            if joueuses_actives is not None and j_p.nom not in joueuses_actives:
+                continue
+            if nom_p in toutes_du_club:
+                eq_orig = toutes_du_club[nom_p]["equipe_origine"]
+                nom_f_orig = f"effectif_{eq_orig.replace(' ', '_').replace('-', '')}.json"
+                mgr_orig = EquipeManager(fichier=nom_f_orig)
+                if nom_p in mgr_orig.joueuses:
+                    jp_orig = mgr_orig.joueuses[nom_p]
+                    
+                    # On recopie les stats du match sur l'objet d'origine
+                    jp_orig.cartons_jaunes = j_p.cartons_jaunes
+                    jp_orig.exclusions_2min = j_p.exclusions_2min
+                    if isinstance(jp_orig, JoueuseDeChamp):
+                        jp_orig.buts = j_p.buts
+                        jp_orig.tirs = j_p.tirs
+                        jp_orig.passes_decisives = j_p.passes_decisives
+                        jp_orig.pertes_de_balles_passe = j_p.pertes_de_balles_passe
+                        jp_orig.pertes_de_balles_faute = j_p.pertes_de_balles_faute
+                        jp_orig.duels_off_gagnes = j_p.duels_off_gagnes
+                        jp_orig.duels_off_perdus = j_p.duels_off_perdus
+                        jp_orig.duels_def_gagnes = j_p.duels_def_gagnes
+                        jp_orig.duels_def_perdus = j_p.duels_def_perdus
+                        jp_orig.neutralisations = j_p.neutralisations
+                        jp_orig.interceptions = j_p.interceptions
+                        jp_orig.pertes_balles_provoquees = j_p.pertes_balles_provoquees
+                    elif isinstance(jp_orig, Gardienne):
+                        jp_orig.arrets = j_p.arrets
+                        jp_orig.tirs_subis = j_p.tirs_subis
+                        jp_orig.buts_encaisses = j_p.buts_encaisses
+                        jp_orig.buts = j_p.buts
+                        jp_orig.tirs = j_p.tirs
+
+                    numero_a_archiver_p = numeros_match.get(jp_orig.nom, jp_orig.numero)
+                    match_common_data_p = {
+                        "match": nom_match,
+                        "score_equipe": score_eq,
+                        "score_adversaire": score_adv,
+                        "numero_match": numero_a_archiver_p,
+                        "attaques_adversaires": attaques_adv_data or {},
+                        "journal_actions": journal_actions or [],
+                        "commentaires_staff": commentaires_staff or []
+                    }
+
+                    if isinstance(jp_orig, JoueuseDeChamp):
+                        match_data_p = {
+                            **match_common_data_p,
+                            "buts": jp_orig.buts, "tirs": jp_orig.tirs, "passes_decisives": jp_orig.passes_decisives,
+                            "pertes_passe": jp_orig.pertes_de_balles_passe, "pertes_faute": jp_orig.pertes_de_balles_faute,
+                            "duels_off_gagnes": jp_orig.duels_off_gagnes, "duels_off_perdus": jp_orig.duels_off_perdus,
+                            "duels_def_gagnes": jp_orig.duels_def_gagnes, "duels_def_perdus": jp_orig.duels_def_perdus,
+                            "neutralisations": jp_orig.neutralisations, "interceptions": jp_orig.interceptions,
+                            "balles_provoquees": jp_orig.pertes_balles_provoquees,
+                            "cartons_jaunes": jp_orig.cartons_jaunes, "exclusions_2min": jp_orig.exclusions_2min,
+                        }
+                    else:
+                        match_data_p = {
+                            **match_common_data_p,
+                            "arrets": jp_orig.arrets, "tirs_subis": jp_orig.tirs_subis,
+                            "buts_encaisses": jp_orig.buts_encaisses, "buts": jp_orig.buts, "tirs": jp_orig.tirs,
+                            "cartons_jaunes": jp_orig.cartons_jaunes, "exclusions_2min": jp_orig.exclusions_2min,
+                        }
+
+                    jp_orig.historique_matchs.append(match_data_p)
+                    mgr_orig.sauvegarder_donnees()
 
     def sauvegarder_commentaire_post_match(self, nom_match, texte_bilan):
         """Enregistre ou met à jour le bilan écrit post-match dans l'historique."""

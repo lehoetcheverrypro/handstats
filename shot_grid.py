@@ -1,5 +1,42 @@
 import streamlit as st
 
+def afficher_selecteur_zone_terrain(key_suffix="terrain"):
+    """
+    Affiche le choix de la zone de départ du tir sur le demi-terrain :
+    - Aile Gauche / Droite
+    - 6m Centre
+    - Extérieur 9m Gauche / Centre / Droite
+    """
+    st.markdown("""
+        <div style='text-align: center; font-weight: 600; margin-bottom: 12px; color: #334155; font-size: 15px;'>
+            📍 Étape 1/2 : D'où part le tir sur le terrain ?
+        </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns(3)
+    zone_choisie = None
+    
+    with col1:
+        if st.button("⬅️ Aile Gauche", key=f"ter_ag_{key_suffix}", use_container_width=True):
+            zone_choisie = "Aile Gauche"
+        if st.button("🎯 Extérieur 9m Gauche", key=f"ter_9mg_{key_suffix}", use_container_width=True):
+            zone_choisie = "Exter 9m Gauche"
+            
+    with col2:
+        if st.button("📍 6m Centre", key=f"ter_6mc_{key_suffix}", use_container_width=True):
+            zone_choisie = "6m Centre"
+        if st.button("🎯 Extérieur 9m Centre", key=f"ter_9mc_{key_suffix}", use_container_width=True):
+            zone_choisie = "Exter 9m Centre"
+            
+    with col3:
+        if st.button("➡️ Aile Droite", key=f"ter_ad_{key_suffix}", use_container_width=True):
+            zone_choisie = "Aile Droite"
+        if st.button("🎯 Extérieur 9m Droite", key=f"ter_9md_{key_suffix}", use_container_width=True):
+            zone_choisie = "Exter 9m Droite"
+            
+    return zone_choisie
+
+
 def afficher_grille_saisie_interactive(key_suffix, action_type=None):
     """
     Affiche une grille interactive de la cage de handball (zones 1 à 9 avec flèches).
@@ -7,7 +44,7 @@ def afficher_grille_saisie_interactive(key_suffix, action_type=None):
     """
     st.markdown("""
         <div style='text-align: center; font-weight: 600; margin-bottom: 10px; color: #334155; font-size: 14px;'>
-            🎯 Localisation de la frappe (Cage 3x3)
+            🎯 Étape 2/2 : Localisation de la frappe (Cage 3x3)
         </div>
     """, unsafe_allow_html=True)
     
@@ -46,10 +83,10 @@ def afficher_grille_saisie_interactive(key_suffix, action_type=None):
             
     return zone_choisie
 
+
 def afficher_cage_recapitulative(donnees_zones, titre="Récapitulatif des Tirs", inclure_hors_cadre=True):
     """
-    Affiche un récapitulatif visuel sous forme de grille 3x3 de la cage de handball
-    avec des couleurs dynamiques selon la réussite, sans émojis dans le ratio et contraste garanti.
+    Affiche un récapitulatif visuel sous forme de grille 3x3 de la cage de handball.
     """
     st.markdown(f"**{titre}**")
     
@@ -76,18 +113,17 @@ def afficher_cage_recapitulative(donnees_zones, titre="Récapitulatif des Tirs",
             total = succes + echec
             pct = round((succes / total * 100), 1) if total > 0 else 0.0
             
-            # Couleurs dynamiques selon le % de réussite
             if total == 0:
                 bg_color = "#f8fafc"
                 border_color = "#cbd5e1"
             elif pct >= 60:
-                bg_color = "#ecfdf5" # Vert clair
+                bg_color = "#ecfdf5"
                 border_color = "#34d399"
             elif pct >= 30:
-                bg_color = "#fffbeb" # Jaune/Orange clair
+                bg_color = "#fffbeb"
                 border_color = "#fbbf24"
             else:
-                bg_color = "#fef2f2" # Rouge clair
+                bg_color = "#fef2f2"
                 border_color = "#f87171"
             
             col_cible = [c1, c2, c3][idx]

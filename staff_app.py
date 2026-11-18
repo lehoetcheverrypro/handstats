@@ -7,7 +7,7 @@ import time
 from streamlit_autorefresh import st_autorefresh 
 from tactics import afficher_tableau_tactique
 from auth_manager import afficher_en_tete_avec_profil
-from shot_grid import afficher_grille_saisie_interactive, afficher_cage_recapitulative
+from shot_grid import afficher_grille_saisie_interactive, afficher_cage_recapitulative, afficher_selecteur_zone_terrain
 
 def run_staff_app(equipe_assignee):
     # --- DÉTERMINATION AUTOMATIQUE DU GENRE DE L'ÉQUIPE ---
@@ -44,6 +44,16 @@ def run_staff_app(equipe_assignee):
     # En-tête combiné Titre + Profil
     afficher_en_tete_avec_profil(f"🎽 Espace Staff — {equipe_assignee}")
     st.info(f"Vous pilotez actuellement les données pour l'équipe **{equipe_assignee}**.")
+
+    # --- LISTE EXACTE DES ZONES DE TERRAIN (Alignée sur shot_grid.py) ---
+    ZONES_TERRAIN_LISTE = [
+        "Aile Gauche", 
+        "Exter 9m Gauche", 
+        "6m Centre", 
+        "Exter 9m Centre", 
+        "Aile Droite", 
+        "Exter 9m Droite"
+    ]
 
     # --- DESIGN SYSTEM & CSS PERSONNALISÉ ---
     st.markdown("""
@@ -107,6 +117,15 @@ def run_staff_app(equipe_assignee):
             return manager.joueuses[nom]
         return st.session_state.get(pretes_key, {}).get(nom)
 
+    def get_numero_actif(nom):
+        # Cherche si un numéro spécifique a été défini pour ce match dans le session_state
+        nums_match = st.session_state.get(f"numeros_match_{equipe_assignee}", {})
+        if nom in nums_match:
+            return nums_match[nom]
+        # Sinon, récupère le numéro de base du profil
+        p = get_membre(nom)
+        return p.numero if p else 1
+
     page_key = f"page_actuelle_{equipe_assignee}"
     if page_key not in st.session_state:
         st.session_state[page_key] = "accueil"
@@ -137,19 +156,19 @@ def run_staff_app(equipe_assignee):
             return "🟣"
         return "⚪"
 
-    def enregistrer_zone_tir_live(nom_membre, zone, est_succes, est_gardien=False):
+    def enregistrer_zone_tir_live(nom_membre, zone_terrain, zone_cage, est_succes):
         zones_key = f"zones_tirs_match_{equipe_assignee}"
         if zones_key not in st.session_state:
             st.session_state[zones_key] = {}
         if nom_membre not in st.session_state[zones_key]:
             st.session_state[zones_key][nom_membre] = {}
-        if zone not in st.session_state[zones_key][nom_membre]:
-            st.session_state[zones_key][nom_membre][zone] = {"succes": 0, "echec": 0}
+        if zone_cage not in st.session_state[zones_key][nom_membre]:
+            st.session_state[zones_key][nom_membre][zone_cage] = {"succes": 0, "echec": 0}
         
         if est_succes:
-            st.session_state[zones_key][nom_membre][zone]["succes"] += 1
+            st.session_state[zones_key][nom_membre][zone_cage]["succes"] += 1
         else:
-            st.session_state[zones_key][nom_membre][zone]["echec"] += 1
+            st.session_state[zones_key][nom_membre][zone_cage]["echec"] += 1
 
     # ==========================================
     # 1. ÉCRAN D'ACCUEIL
@@ -222,15 +241,31 @@ def run_staff_app(equipe_assignee):
                         st.markdown(f"**{L['joueurs'].capitalize()} de l'effectif principal :**")
                         
                         membres_coches = {}
-                        for nom, p_obj in manager.joueuses.items():
-                            membres_coches[nom] = st.checkbox(
-                                f"#{p_obj.numero} - {p_obj.nom} ({p_obj.poste})", 
-                                value=True, 
-                                key=f"chk_membre_{equipe_assignee}_{nom}"
-                            )
+                        numeros_match_saisis = {}
                         
+                        for nom, p_obj in manager.joueuses.items():
+                            col_chk, col_num = st.columns([3, 1])
+                            with col_chk:
+                                est_convoquee = st.checkbox(
+                                    f"{p_obj.nom} ({p_obj.poste})", 
+                                    value=True, 
+                                    key=f"chk_membre_{equipe_assignee}_{nom}"
+                                )
+                            with col_num:
+                                # On propose le numéro actuel par défaut pour le match
+                                num_du_jour = st.number_input(
+                                    "N°", min_value=1, max_value=99, 
+                                    value=int(p_obj.numero), 
+                                    key=f"num_match_{equipe_assignee}_{nom}",
+                                    label_visibility="collapsed"
+                                )
+                            
+                            if est_convoquee:
+                                membres_coches[nom] = True
+                                numeros_match_saisis[nom] = num_du_jour
+
                         st.markdown("---")
-                        st.markdown(f"⚡ **Convoquer des {L['joueurs']} d'autres équipes du club (Prêt / Surclassement temporaire)**")
+                        st.markdown(f"⚡ **Convoquer des {L['joueurs']} d'autres équipes du club (Prêt / Surclassement)**")
                         
                         club_equipes = st.session_state.get("club_equipes", ["Séniors M", "Séniors F", "-18M", "-15F"])
                         autres_equipes = [eq for eq in club_equipes if eq != equipe_assignee]
@@ -243,15 +278,28 @@ def run_staff_app(equipe_assignee):
                                 if info["equipe_origine"] == eq and nom not in manager.joueuses
                             }
                             if membres_cette_equipe:
-                                with st.expander(f"📁 Équipe : {eq} ({len(membres_cette_equipe)} {L['joueur']}(s) disponible(s))"):
+                                with st.expander(f"📁 Équipe : {eq} ({len(membres_cette_equipe)} {L['joueur']}(s))"):
                                     for nom_ext, info_ext in membres_cette_equipe.items():
                                         poste_ext = info_ext["poste"]
                                         num_ext = info_ext["numero"]
-                                        surclassements_coches[nom_ext] = st.checkbox(
-                                            f"#{num_ext} - {nom_ext} ({poste_ext})",
-                                            value=False,
-                                            key=f"chk_surclassement_{equipe_assignee}_{nom_ext}"
-                                        )
+                                        
+                                        col_chk_ext, col_num_ext = st.columns([3, 1])
+                                        with col_chk_ext:
+                                            est_coche_ext = st.checkbox(
+                                                f"{nom_ext} ({poste_ext})",
+                                                value=False,
+                                                key=f"chk_surclassement_{equipe_assignee}_{nom_ext}"
+                                            )
+                                        with col_num_ext:
+                                            num_du_jour_ext = st.number_input(
+                                                "N°ext", min_value=1, max_value=99,
+                                                value=int(num_ext),
+                                                key=f"num_match_ext_{equipe_assignee}_{nom_ext}",
+                                                label_visibility="collapsed"
+                                            )
+                                        
+                                        if est_coche_ext:
+                                            surclassements_coches[nom_ext] = num_du_jour_ext
 
                         st.markdown("---")
                         valider_feuille = st.form_submit_button(
@@ -261,17 +309,23 @@ def run_staff_app(equipe_assignee):
                         )
                         
                         if valider_feuille:
-                            membres_selectionnes = [nom for nom, est_coche in membres_coches.items() if est_coche]
-                            membres_surclassees = [nom for nom, est_coche in surclassements_coches.items() if est_coche]
+                            membres_selectionnes = list(membres_coches.keys())
+                            membres_surclassees_noms = list(surclassements_coches.keys())
                             
+                            # 1. On fusionne les numéros saisis dans un dictionnaire de session (SANS toucher aux objets permanents)
+                            dict_nums_match = {**numeros_match_saisis, **surclassements_coches}
+                            st.session_state[f"numeros_match_{equipe_assignee}"] = dict_nums_match
+
                             st.session_state[pretes_key] = {}
-                            for nom_s in membres_surclassees:
+                            for nom_s in membres_surclassees_noms:
                                 info_s = toutes_joueuses_club[nom_s]
+                                num_attribue = surclassements_coches[nom_s]
                                 if nom_s not in manager.joueuses:
+                                    # On crée l'objet avec le numéro du jour directement
                                     if info_s["type"] == "gardienne":
-                                        st.session_state[pretes_key][nom_s] = Gardienne(nom_s, info_s["poste"], info_s["numero"])
+                                        st.session_state[pretes_key][nom_s] = Gardienne(nom_s, info_s["poste"], num_attribue)
                                     else:
-                                        st.session_state[pretes_key][nom_s] = JoueuseDeChamp(nom_s, info_s["poste"], info_s["numero"])
+                                        st.session_state[pretes_key][nom_s] = JoueuseDeChamp(nom_s, info_s["poste"], num_attribue)
                                 membres_selectionnes.append(nom_s)
 
                             if not nom_match_saisi.strip():
@@ -279,6 +333,8 @@ def run_staff_app(equipe_assignee):
                             elif not membres_selectionnes:
                                 st.error(f"Vous devez sélectionner au moins un(e) {L['joueur']}.")
                             else:
+                                # REMARQUE : On NE modifie PLUS obj_m.numero ici, donc l'effectif permanent reste 100% intact !
+                                
                                 st.session_state[f"match_en_cours_{equipe_assignee}"] = True
                                 st.session_state[f"nom_match_actuel_{equipe_assignee}"] = nom_match_saisi
                                 st.session_state[f"joueuses_actives_match_{equipe_assignee}"] = membres_selectionnes
@@ -303,6 +359,8 @@ def run_staff_app(equipe_assignee):
                                 st.session_state[f"commentaires_staff_match_{equipe_assignee}"] = []
                                 st.session_state[f"zones_tirs_match_{equipe_assignee}"] = {}
                                 st.session_state[f"pop_up_active_{equipe_assignee}"] = None
+                                st.session_state[f"etape_saisie_tir_{equipe_assignee}"] = "terrain"
+                                st.session_state[f"temp_zone_terrain_{equipe_assignee}"] = None
                                 st.rerun()
             
             else:
@@ -333,7 +391,7 @@ def run_staff_app(equipe_assignee):
                     s = secondes % 60
                     return f"{m:02d}:{s:02d}"
 
-                def enregistrer_action(type_action, details, zone=None):
+                def enregistrer_action(type_action, details, zone_terrain=None, zone_cage=None):
                     if journal_key not in st.session_state:
                         st.session_state[journal_key] = []
                     
@@ -342,51 +400,96 @@ def run_staff_app(equipe_assignee):
                         secs += int(time.time() - st.session_state[chrono_deb_key])
                     
                     temps_str = formater_temps(secs)
-                    detail_complet = f"{details} [{zone}]" if zone else details
+                    
+                    if zone_terrain and zone_cage:
+                        detail_complet = f"{details} [Terrain: {zone_terrain} | Cage: {zone_cage}]"
+                    elif zone_cage:
+                        detail_complet = f"{details} [{zone_cage}]"
+                    else:
+                        detail_complet = details
+
                     entry = {
                         "temps": temps_str,
                         "type_action": type_action,
                         "details": detail_complet
                     }
-                    if zone:
-                        entry["zone"] = zone
+                    if zone_terrain:
+                        entry["zone_terrain"] = zone_terrain
+                    if zone_cage:
+                        entry["zone_cage"] = zone_cage
+
                     st.session_state[journal_key].append(entry)
 
-                @st.dialog("🎯 Localisation de l'Action sur la Cage")
-                def modal_saisie_cage(p_nom, action_type):
+                # ==========================================
+                # MODALE SÉQUENTIELLE EN 2 ÉTAPES (TERRAIN ➔ CAGE)
+                # ==========================================
+                @st.dialog("🎯 Localisation Géographique & Frappe")
+                def modal_saisie_double(p_nom, action_type):
                     p_obj = get_membre(p_nom)
                     st.markdown(f"{L['joueur'].capitalize()} : **#{p_obj.numero} {p_obj.nom}** — Action : **{action_type}**")
-                    st.write("")
-                    
-                    zone_sel = afficher_grille_saisie_interactive(f"modal_{equipe_assignee}_{p_nom}_{action_type}", action_type=action_type)
-                    if zone_sel:
-                        if action_type == "But":
-                            p_obj.buts += 1
-                            p_obj.tirs += 1
-                            enregistrer_zone_tir_live(p_obj.nom, zone_sel, est_succes=True)
-                            enregistrer_action("But", f"#{p_obj.numero} {p_obj.nom}", zone=zone_sel)
-                        elif action_type == "Tir raté":
-                            p_obj.tirs += 1
-                            enregistrer_zone_tir_live(p_obj.nom, zone_sel, est_succes=False)
-                            enregistrer_action("Tir raté", f"#{p_obj.numero} {p_obj.nom}", zone=zone_sel)
-                        elif action_type == "Arrêt décisif":
-                            p_obj.arrets += 1
-                            p_obj.tirs_subis += 1
-                            enregistrer_zone_tir_live(p_obj.nom, zone_sel, est_succes=True, est_gardien=True)
-                            enregistrer_action("Arrêt décisif", f"#{p_obj.numero} {p_obj.nom} ({L['gardien']})", zone=zone_sel)
-                        elif action_type == "But encaissé":
-                            p_obj.tirs_subis += 1
-                            p_obj.buts_encaisses += 1
-                            enregistrer_zone_tir_live(p_obj.nom, zone_sel, est_succes=False, est_gardien=True)
-                            enregistrer_action("But encaissé", f"#{p_obj.numero} {p_obj.nom} ({L['gardien']})", zone=zone_sel)
+                    st.markdown("---")
+
+                    etape_key = f"etape_saisie_tir_{equipe_assignee}"
+                    temp_terrain_key = f"temp_zone_terrain_{equipe_assignee}"
+
+                    if etape_key not in st.session_state:
+                        st.session_state[etape_key] = "terrain"
+                    if temp_terrain_key not in st.session_state:
+                        st.session_state[temp_terrain_key] = None
+
+                    # --- ÉTAPE 1 : CHOIX DE LA ZONE DU TERRAIN (VIA LES BOUTONS) ---
+                    if st.session_state[etape_key] == "terrain":
+                        # On appelle directement la fonction de ton module shot_grid.py
+                        zone_ter_choisie = afficher_selecteur_zone_terrain(key_suffix=f"mod_{p_nom}")
                         
-                        manager.sauvegarder_donnees()
-                        st.session_state[popup_key] = None
-                        st.rerun()
+                        if zone_ter_choisie:
+                            st.session_state[temp_terrain_key] = zone_ter_choisie
+                            st.session_state[etape_key] = "cage"
+                            st.rerun()
+
+                    # --- ÉTAPE 2 : CHOIX DE LA ZONE D'IMPACT DANS LA CAGE ---
+                    elif st.session_state[etape_key] == "cage":
+                        zone_ter_actuelle = st.session_state[temp_terrain_key]
+                        st.info(f"📍 Zone de terrain sélectionnée : **{zone_ter_actuelle}**")
+                        
+                        if st.button("🔄 Modifier la zone du terrain", use_container_width=True):
+                            st.session_state[etape_key] = "terrain"
+                            st.rerun()
+
+                        st.markdown("---")
+                        st.markdown("##### 🎯 2. Localiser l'impact ou le raté dans la cage :")
+                        zone_cage = afficher_grille_saisie_interactive(f"modal_cage_{equipe_assignee}_{p_nom}_{action_type}", action_type=action_type)
+                        
+                        if zone_cage:
+                            if action_type == "But":
+                                p_obj.buts += 1
+                                p_obj.tirs += 1
+                                enregistrer_zone_tir_live(p_obj.nom, zone_ter_actuelle, zone_cage, est_succes=True)
+                                enregistrer_action("But", f"#{p_obj.numero} {p_obj.nom}", zone_terrain=zone_ter_actuelle, zone_cage=zone_cage)
+                            elif action_type == "Tir raté":
+                                p_obj.tirs += 1
+                                enregistrer_zone_tir_live(p_obj.nom, zone_ter_actuelle, zone_cage, est_succes=False)
+                                enregistrer_action("Tir raté", f"#{p_obj.numero} {p_obj.nom}", zone_terrain=zone_ter_actuelle, zone_cage=zone_cage)
+                            elif action_type == "Arrêt décisif":
+                                p_obj.arrets += 1
+                                p_obj.tirs_subis += 1
+                                enregistrer_zone_tir_live(p_obj.nom, zone_ter_actuelle, zone_cage, est_succes=True)
+                                enregistrer_action("Arrêt décisif", f"#{p_obj.numero} {p_obj.nom} ({L['gardien']})", zone_terrain=zone_ter_actuelle, zone_cage=zone_cage)
+                            elif action_type == "But encaissé":
+                                p_obj.tirs_subis += 1
+                                p_obj.buts_encaisses += 1
+                                enregistrer_zone_tir_live(p_obj.nom, zone_ter_actuelle, zone_cage, est_succes=False)
+                                enregistrer_action("But encaissé", f"#{p_obj.numero} {p_obj.nom} ({L['gardien']})", zone_terrain=zone_ter_actuelle, zone_cage=zone_cage)
+                            
+                            manager.sauvegarder_donnees()
+                            st.session_state[popup_key] = None
+                            st.session_state[etape_key] = "terrain"
+                            st.session_state[temp_terrain_key] = None
+                            st.rerun()
 
                 if st.session_state.get(popup_key):
                     p_nom_popup, act_popup = st.session_state[popup_key]
-                    modal_saisie_cage(p_nom_popup, act_popup)
+                    modal_saisie_double(p_nom_popup, act_popup)
 
                 secondes_totales = st.session_state.get(chrono_secs_key, 0)
                 if st.session_state.get(chrono_enc_key, False) and st.session_state.get(chrono_deb_key):
@@ -483,7 +586,10 @@ def run_staff_app(equipe_assignee):
                             est_actif = (nom_j == st.session_state.get(focus_key))
                             type_btn = "primary" if est_actif else "secondary"
                             prefix = get_prefix_couleur(p_item.poste)
-                            label_btn = f"{prefix} #{p_item.numero} {p_item.nom.split()[0]}"
+                            
+                            # On utilise le numéro actif du match
+                            num_actuel = get_numero_actif(p_item.nom)
+                            label_btn = f"{prefix} #{num_actuel} {p_item.nom.split()[0]}"
                             
                             if st.button(label_btn, key=f"terrain_j_{equipe_assignee}_{nom_j}", use_container_width=True, type=type_btn):
                                 st.session_state[focus_key] = nom_j
@@ -528,7 +634,8 @@ def run_staff_app(equipe_assignee):
                     with st.container(border=True):
                         h_col1, h_col2, h_col3 = st.columns([2.2, 1.8, 2.5])
                         with h_col1:
-                            st.markdown(f"#### ⚡ #{p_obj.numero} - {p_obj.nom}")
+                            num_actuel = get_numero_actif(p_obj.nom)
+                            st.markdown(f"#### ⚡ #{num_actuel} - {p_obj.nom}")
                         with h_col2:
                             st.markdown(get_badge_poste_html(p_obj.poste), unsafe_allow_html=True)
                         with h_col3:
@@ -550,10 +657,14 @@ def run_staff_app(equipe_assignee):
                                     with ba1:
                                         if st.button("🟢 +1 But", key=f"btn_but_{equipe_assignee}_{p_obj.nom}", use_container_width=True):
                                             st.session_state[popup_key] = (p_obj.nom, "But")
+                                            st.session_state[f"etape_saisie_tir_{equipe_assignee}"] = "terrain"
+                                            st.session_state[f"temp_zone_terrain_{equipe_assignee}"] = None
                                             st.rerun()
                                     with ba2:
                                         if st.button("🔴 Tir raté", key=f"btn_tirete_{equipe_assignee}_{p_obj.nom}", use_container_width=True):
                                             st.session_state[popup_key] = (p_obj.nom, "Tir raté")
+                                            st.session_state[f"etape_saisie_tir_{equipe_assignee}"] = "terrain"
+                                            st.session_state[f"temp_zone_terrain_{equipe_assignee}"] = None
                                             st.rerun()
 
                                     ba3, ba4 = st.columns(2)
@@ -647,6 +758,8 @@ def run_staff_app(equipe_assignee):
                             with g1:
                                 if st.button("🧤 +1 Arrêt décisif", key=f"btn_arret_{equipe_assignee}_{p_obj.nom}", use_container_width=True):
                                     st.session_state[popup_key] = (p_obj.nom, "Arrêt décisif")
+                                    st.session_state[f"etape_saisie_tir_{equipe_assignee}"] = "terrain"
+                                    st.session_state[f"temp_zone_terrain_{equipe_assignee}"] = None
                                     st.rerun()
                                 if st.button("🟢 +1 But (marqué)", key=f"btn_gbut_{equipe_assignee}_{p_obj.nom}", use_container_width=True):
                                     p_obj.buts += 1
@@ -662,6 +775,8 @@ def run_staff_app(equipe_assignee):
                             with g2:
                                 if st.button("🥅 But encaissé", key=f"btn_enc_{equipe_assignee}_{p_obj.nom}", use_container_width=True):
                                     st.session_state[popup_key] = (p_obj.nom, "But encaissé")
+                                    st.session_state[f"etape_saisie_tir_{equipe_assignee}"] = "terrain"
+                                    st.session_state[f"temp_zone_terrain_{equipe_assignee}"] = None
                                     st.rerun()
                                 if st.button("🔴 Tir raté", key=f"btn_gtirete_{equipe_assignee}_{p_obj.nom}", use_container_width=True):
                                     p_obj.tirs += 1
@@ -733,8 +848,9 @@ def run_staff_app(equipe_assignee):
                 with st.container(border=True):
                     st.subheader("📊 Dashboard & Synthèse Live de la Rencontre")
                     
-                    champ_actives = [get_membre(n) for n in joueuses_actives if get_membre(n) and isinstance(get_membre(n), JoueuseDeChamp)]
-                    gard_actives = [get_membre(n) for n in joueuses_actives if get_membre(n) and isinstance(get_membre(n), Gardienne)]
+                    tous_actifs_objs = [get_membre(n) for n in joueuses_actives if get_membre(n)]
+                    champ_actives = [j for j in tous_actifs_objs if isinstance(j, JoueuseDeChamp)]
+                    gard_actives = [j for j in tous_actifs_objs if isinstance(j, Gardienne)]
                     
                     tot_b = sum(j.buts for j in champ_actives) + sum(g.buts for g in gard_actives)
                     tot_t = sum(j.tirs for j in champ_actives) + sum(g.tirs for g in gard_actives)
@@ -763,16 +879,17 @@ def run_staff_app(equipe_assignee):
                     terrain_objs = [get_membre(n) for n in st.session_state[terrain_key] if get_membre(n)]
                     data_terrain = []
                     for j in terrain_objs:
+                        num_actuel = get_numero_actif(j.nom)
                         if isinstance(j, JoueuseDeChamp):
                             data_terrain.append({
-                                "N°": j.numero, "Nom": j.nom, "Poste": j.poste, 
+                                "N°": num_actuel, "Nom": j.nom, "Poste": j.poste, 
                                 "Buts/Tirs": f"{j.buts}/{j.tirs} ({j.efficacite_tirs()}%)", 
                                 "Passes D.": j.passes_decisives, "Pertes": j.pertes_de_balles_passe + j.pertes_de_balles_faute,
                                 "🟨": j.cartons_jaunes, "⏱️": j.exclusions_2min
                             })
                         elif isinstance(j, Gardienne):
                             data_terrain.append({
-                                "N°": j.numero, "Nom": j.nom, "Poste": L["gardien"], 
+                                "N°": num_actuel, "Nom": j.nom, "Poste": L["gardien"], 
                                 "Buts/Tirs": f"{j.buts}/{j.tirs} ({round(j.buts/j.tirs*100,1) if j.tirs>0 else 0.0}%)",
                                 "Arrêts/Subis": f"{j.arrets}/{j.tirs_subis} ({j.pourcentage_arrets()}%)",
                                 "🟨": j.cartons_jaunes, "⏱️": j.exclusions_2min
@@ -814,7 +931,6 @@ def run_staff_app(equipe_assignee):
 
                     st.markdown("---")
                     
-                    # Agrégation live robuste depuis zones_tirs_match
                     zones_match = st.session_state.get(zones_key, {})
                     agregat_tirs_eq = {}
                     agregat_gard_eq = {}
@@ -854,7 +970,7 @@ def run_staff_app(equipe_assignee):
                 
                 # --- CLÔTURE DE LA RENCONTRE ---
                 with st.container(border=True):
-                    st.subheader("🏁 Clôture de la Rencontre")
+                    st.subheader("🏁 Clôture & Annulation de la Rencontre")
                     
                     with st.expander(f"✏️ Ajuster des statistiques manuellement en cas d'erreur (Adapté au rôle du/de la {L['joueur']})"):
                         joueuses_existantes_actives = [n for n in joueuses_actives if get_membre(n)]
@@ -926,24 +1042,65 @@ def run_staff_app(equipe_assignee):
                                         st.rerun()
 
                     st.write("")
+                    
+                    # --- ZONE DE DANGER : ANNULER LE MATCH EN COURS ---
+                    with st.expander("⚠️ Zone de danger : Annuler le match en cours (Lancé par erreur)"):
+                        st.warning("Attention : Si vous annulez ce match, toutes les actions enregistrées depuis le début de la rencontre seront perdues et les compteurs des joueuses seront remis à zéro.")
+                        if st.button("❌ Annuler et abandonner ce match en cours", type="primary", key=f"btn_annuler_match_en_cours_{equipe_assignee}"):
+                            for nom_j_actif in joueuses_actives:
+                                obj_j = get_membre(nom_j_actif)
+                                if obj_j:
+                                    obj_j.cartons_jaunes = 0
+                                    obj_j.exclusions_2min = 0
+                                    if isinstance(obj_j, JoueuseDeChamp):
+                                        obj_j.buts = 0
+                                        obj_j.tirs = 0
+                                        obj_j.passes_decisives = 0
+                                        obj_j.pertes_de_balles_passe = 0
+                                        obj_j.pertes_de_balles_faute = 0
+                                        obj_j.duels_off_gagnes = 0
+                                        obj_j.duels_off_perdus = 0
+                                        obj_j.duels_def_gagnes = 0
+                                        obj_j.duels_def_perdus = 0
+                                        obj_j.neutralisations = 0
+                                        obj_j.interceptions = 0
+                                        obj_j.pertes_balles_provoquees = 0
+                                    elif isinstance(obj_j, Gardienne):
+                                        obj_j.arrets = 0
+                                        obj_j.tirs_subis = 0
+                                        obj_j.buts_encaisses = 0
+                                        obj_j.buts = 0
+                                        obj_j.tirs = 0
+                            
+                            manager.sauvegarder_donnees()
+
+                            st.session_state[f"match_en_cours_{equipe_assignee}"] = False
+                            st.session_state[att_adv_key] = {"Yago": 0, "Yego": 0, "Montpellier": 0, "Croisé": 0, "Autre": 0}
+                            st.session_state[zones_key] = {}
+                            st.session_state[popup_key] = None
+                            st.session_state[pretes_key] = {}
+                            if f"numeros_match_{equipe_assignee}" in st.session_state:
+                                del st.session_state[f"numeros_match_{equipe_assignee}"]
+                            if f"journal_actions_match_{equipe_assignee}" in st.session_state:
+                                del st.session_state[f"journal_actions_match_{equipe_assignee}"]
+                            
+                            st.toast("Le match a été annulé avec succès.", icon="🗑️")
+                            aller_a("accueil")
+
+                    st.write("")
                     if st.button("🏁 Archiver définitivement ce match et réinitialiser", type="primary", use_container_width=True, key=f"btn_archiver_match_{equipe_assignee}"):
                         pretes_dict = st.session_state.get(pretes_key, {})
-                        for nom_p, obj_p in pretes_dict.items():
-                            if nom_p not in manager.joueuses:
-                                manager.joueuses[nom_p] = obj_p
+                        dict_nums_match = st.session_state.get(f"numeros_match_{equipe_assignee}", {})
 
                         manager.archiver_match(
                             nom_match_actuel, 
                             attaques_adv_data=st.session_state.get(att_adv_key, {}),
                             joueuses_actives=joueuses_actives,
                             journal_actions=st.session_state.get(journal_key, []),
-                            commentaires_staff=st.session_state.get(commentaires_key, [])
+                            commentaires_staff=st.session_state.get(commentaires_key, []),
+                            numeros_match=dict_nums_match,
+                            pretes_dict=pretes_dict
                         )
-
-                        for nom_p in pretes_dict.keys():
-                            if nom_p in manager.joueuses:
-                                del manager.joueuses[nom_p]
-                        manager.sauvegarder_donnees()
 
                         st.session_state[f"match_en_cours_{equipe_assignee}"] = False
                         st.session_state[att_adv_key] = {"Yago": 0, "Yego": 0, "Montpellier": 0, "Croisé": 0, "Autre": 0}
@@ -984,54 +1141,125 @@ def run_staff_app(equipe_assignee):
                 if not matchs_archives:
                     st.warning("Aucun match n'a encore été archivé.")
                 else:
-                    match_choisi = st.selectbox("Sélectionner une rencontre", matchs_archives, key=f"select_match_archive_{equipe_assignee}")
+                    # Barre de recherche de match
+                    recherche_match = st.text_input("🔍 Rechercher une rencontre (ex: J1, Victoire, Adversaire...)", value="", key=f"search_match_{equipe_assignee}")
                     
-                    lignes_champ = []
-                    lignes_gardiennes = []
-                    attaques_adv_archive = {}
-                    journal_actions_archive = []
-                    commentaires_staff_archive = []
+                    matchs_filtres = [m for m in matchs_archives if recherche_match.lower() in m.lower()] if recherche_match else matchs_archives
 
-                    for j in tous_membres_saison:
-                        donnees_m = next((m for m in j.historique_matchs if m["match"] == match_choisi), None)
-                        if donnees_m:
-                            if not attaques_adv_archive:
-                                attaques_adv_archive = donnees_m.get("attaques_adversaires", {})
-                            if not journal_actions_archive:
-                                journal_actions_archive = donnees_m.get("journal_actions", [])
-                            if not commentaires_staff_archive:
-                                commentaires_staff_archive = donnees_m.get("commentaires_staff", [])
+                    if not matchs_filtres:
+                        st.info("Aucun match ne correspond à votre recherche.")
+                    else:
+                        col_sel_match, col_del_match = st.columns([3, 1])
+                        with col_sel_match:
+                            match_choisi = st.selectbox("Sélectionner une rencontre", matchs_filtres, key=f"select_match_archive_{equipe_assignee}")
+                        with col_del_match:
+                            st.write("") # Alignement vertical
+                            st.write("")
+                            if st.button("🗑️ Supprimer", key=f"btn_suppr_match_arch_{equipe_assignee}", type="secondary", use_container_width=True, help="Efface définitivement ce match de l'historique de l'équipe"):
+                                # Suppression du match dans l'historique de tous les profils de l'effectif
+                                for j_del in tous_membres_saison:
+                                    j_del.historique_matchs = [m for m in j_del.historique_matchs if m["match"] != match_choisi]
+                                manager.sauvegarder_donnees()
+                                
+                                # Nettoyage aussi dans les autres équipes au cas où des surclassées y étaient rattachées
+                                club_equipes_sup = st.session_state.get("club_equipes", ["Séniors M", "Séniors F", "-18M", "-15F"])
+                                for eq_c in club_equipes_sup:
+                                    if eq_c != equipe_assignee:
+                                        mgr_c = EquipeManager(fichier=f"effectif_{eq_c.replace(' ', '_').replace('-', '')}.json")
+                                        modifie = False
+                                        for j_c in mgr_c.joueuses.values():
+                                            avant_len = len(j_c.historique_matchs)
+                                            j_c.historique_matchs = [m for m in j_c.historique_matchs if m["match"] != match_choisi]
+                                            if len(j_c.historique_matchs) < avant_len:
+                                                modifie = True
+                                        if modifie:
+                                            mgr_c.sauvegarder_donnees()
 
-                            if isinstance(j, JoueuseDeChamp):
-                                lignes_champ.append({
-                                    "N°": j.numero, L['joueur'].capitalize(): j.nom, "Poste": j.poste,
-                                    "Buts": donnees_m["buts"], "Tirs": donnees_m["tirs"], 
-                                    "Réussite": f"{round((donnees_m['buts']/donnees_m['tirs']*100),1)}%" if donnees_m["tirs"] > 0 else "0.0%",
-                                    "Passes D.": donnees_m["passes_decisives"],
-                                    "Perte (Passe)": donnees_m.get("pertes_passe", 0),
-                                    "Perte (Faute)": donnees_m.get("pertes_faute", 0),
-                                    "Duels Off": f"{donnees_m.get('duels_off_gagnes', 0)}/{donnees_m.get('duels_off_gagnes', 0)+donnees_m.get('duels_off_perdus', 0)}",
-                                    "Duels Déf": f"{donnees_m.get('duels_def_gagnes', 0)}/{donnees_m.get('duels_def_gagnes', 0)+donnees_m.get('duels_def_perdus', 0)}",
-                                    "Interceptions": donnees_m["interceptions"],
-                                    "Neutralisations": donnees_m.get("neutralisations", 0),
-                                    "Provoquées": donnees_m.get("balles_provoquees", 0),
-                                    "🟨": donnees_m["cartons_jaunes"], "⏱️ 2min": donnees_m["exclusions_2min"]
-                                })
-                            elif isinstance(j, Gardienne):
-                                lignes_gardiennes.append({
-                                    "N°": j.numero, L['gardien']: j.nom,
-                                    "Buts/Tirs": f"{donnees_m.get('buts', 0)}/{donnees_m.get('tirs', 0)}",
-                                    "Arrêts": donnees_m["arrets"], "Tirs Subis": donnees_m["tirs_subis"],
-                                    "% Arrêts": f"{round((donnees_m['arrets']/donnees_m['tirs_subis']*100),1)}%" if donnees_m["tirs_subis"] > 0 else "0.0%",
-                                    "Buts Encaissés": donnees_m["buts_encaisses"],
-                                    "🟨": donnees_m["cartons_jaunes"], "⏱️ 2min": donnees_m["exclusions_2min"]
-                                })
+                                st.success(f"Le match '{match_choisi}' a été supprimé avec succès !")
+                                st.rerun()
 
-                    score_eq = sum(row["Buts"] for row in lignes_champ)
+                        # Initialisation systématique des variables d'archivage
+                        lignes_champ = []
+                        lignes_gardiennes = []
+                        attaques_adv_archive = {}
+                        journal_actions_archive = []
+                        commentaires_staff_archive = []
+
+                        # 1. On récupère TOUTES les joueuses du club (effectif principal + toutes les autres équipes)
+                        club_equipes = st.session_state.get("club_equipes", ["Séniors M", "Séniors F", "-18M", "-15F"])
+                        
+                        # On rassemble tous les gestionnaires d'équipes pour inspecter leurs profils
+                        dictionnaires_managers = {equipe_assignee: manager}
+                        for eq in club_equipes:
+                            if eq != equipe_assignee:
+                                nom_f_orig = f"effectif_{eq.replace(' ', '_').replace('-', '')}.json"
+                                dictionnaires_managers[eq] = EquipeManager(fichier=nom_f_orig)
+
+                        # 2. On parcourt TOUTES les équipes du club pour trouver les joueuses ayant participé à ce match
+                        for nom_eq, mgr in dictionnaires_managers.items():
+                            for j in mgr.joueuses.values():
+                                donnees_m = next((m for m in j.historique_matchs if m["match"] == match_choisi), None)
+                                if donnees_m:
+                                    if not attaques_adv_archive:
+                                        attaques_adv_archive = donnees_m.get("attaques_adversaires", {})
+                                    if not journal_actions_archive:
+                                        journal_actions_archive = donnees_m.get("journal_actions", [])
+                                    if not commentaires_staff_archive:
+                                        commentaires_staff_archive = donnees_m.get("commentaires_staff", [])
+
+                                    num_affiche = donnees_m.get("numero_match", j.numero)
+
+                                    if isinstance(j, JoueuseDeChamp):
+                                        b_val = donnees_m.get("buts", 0)
+                                        t_val = donnees_m.get("tirs", 0)
+                                        lignes_champ.append({
+                                            "N°": num_affiche, 
+                                            L['joueur'].capitalize(): j.nom, 
+                                            "Poste": j.poste,
+                                            "Buts": b_val, 
+                                            "Tirs": t_val, 
+                                            "Réussite": f"{round((b_val/t_val*100),1)}%" if t_val > 0 else "0.0%",
+                                            "Passes D.": donnees_m.get("passes_decisives", 0),
+                                            "Perte (Passe)": donnees_m.get("pertes_passe", 0),
+                                            "Perte (Faute)": donnees_m.get("pertes_faute", 0),
+                                            "Duels Off": f"{donnees_m.get('duels_off_gagnes', 0)}/{donnees_m.get('duels_off_gagnes', 0)+donnees_m.get('duels_off_perdus', 0)}",
+                                            "Duels Déf": f"{donnees_m.get('duels_def_gagnes', 0)}/{donnees_m.get('duels_def_gagnes', 0)+donnees_m.get('duels_def_perdus', 0)}",
+                                            "Interceptions": donnees_m.get("interceptions", 0),
+                                            "Neutralisations": donnees_m.get("neutralisations", 0),
+                                            "Provoquées": donnees_m.get("balles_provoquees", 0),
+                                            "🟨": donnees_m.get("cartons_jaunes", 0), 
+                                            "⏱️ 2min": donnees_m.get("exclusions_2min", 0)
+                                        })
+                                    elif isinstance(j, Gardienne):
+                                        b_gard = donnees_m.get("buts", 0)
+                                        t_gard = donnees_m.get("tirs", 0)
+                                        arrets_val = donnees_m.get("arrets", 0)
+                                        subis_val = donnees_m.get("tirs_subis", 0)
+                                        lignes_gardiennes.append({
+                                            "N°": num_affiche, 
+                                            L['gardien']: j.nom,
+                                            "Poste": j.poste,
+                                            "Buts/Tirs": f"{b_gard}/{t_gard}",
+                                            "Arrêts": arrets_val, 
+                                            "Tirs Subis": subis_val,
+                                            "% Arrêts": f"{round((arrets_val/subis_val*100),1)}%" if subis_val > 0 else "0.0%",
+                                            "Buts Encaissés": donnees_m.get("buts_encaisses", 0),
+                                            "🟨": donnees_m.get("cartons_jaunes", 0), 
+                                            "⏱️ 2min": donnees_m.get("exclusions_2min", 0)
+                                        })
+
+                        # Évite les doublons s'il y a des intersections de profils
+                        lignes_champ = [dict(t) for t in {tuple(d.items()) for d in lignes_champ}]
+                        lignes_gardiennes = [dict(t) for t in {tuple(d.items()) for d in lignes_gardiennes}]
+
+                    # Calcul sécurisé du score total de l'équipe
+                    score_eq = sum(row.get("Buts", 0) for row in lignes_champ)
                     for row_g in lignes_gardiennes:
-                        b_str = str(row_g["Buts/Tirs"]).split('/')[0]
-                        score_eq += int(b_str) if b_str.isdigit() else 0
-                    score_adv = sum(row["Buts Encaissés"] for row in lignes_gardiennes)
+                        parts = str(row_g.get("Buts/Tirs", "0/0")).split('/')
+                        if parts[0].isdigit():
+                            score_eq += int(parts[0])
+                    
+                    score_adv = sum(row.get("Buts Encaissés", 0) for row in lignes_gardiennes)
 
                     st.markdown(f"### Résultat du match : {score_eq} - {score_adv}")
                     
@@ -1043,33 +1271,73 @@ def run_staff_app(equipe_assignee):
                     st.markdown("---")
                     st.markdown("### 🎯 Cartographie des Tirs & Arrêts du Match")
                     
+                    # Filtre par zone de terrain (Liste déroulante alignée)
+                    zone_filtre_match = st.selectbox(
+                        "📍 Filtrer par zone du terrain (Optionnel)", 
+                        ["Toutes les zones"] + ZONES_TERRAIN_LISTE, 
+                        key=f"filtre_match_{match_choisi}"
+                    )
+
                     agregat_tirs_match_arc = {}
                     agregat_gard_match_arc = {}
                     
-                    for j in tous_membres_saison:
-                        dm = next((m for m in j.historique_matchs if m["match"] == match_choisi), None)
-                        if dm:
-                            for act in dm.get("journal_actions", []):
-                                det = act.get("details", "")
-                                act_type = act.get("type_action", "")
-                                if f"#{j.numero} {j.nom}" in det and "[" in det and det.endswith("]"):
-                                    zone_ext = det.split("[")[-1].rstrip("]")
-                                    est_gardienne_val = isinstance(j, Gardienne) or "gardien" in j.poste.lower()
-                                    cible = agregat_gard_match_arc if est_gardienne_val else agregat_tirs_match_arc
+                    # On associe chaque nom de joueuse (effectif + surclassées) à son type (champ ou gardienne)
+                    infos_joueuses_total = {}
+                    dictionnaires_managers = {equipe_assignee: manager}
+                    for eq_c in club_equipes:
+                        if eq_c != equipe_assignee:
+                            dictionnaires_managers[eq_c] = EquipeManager(fichier=f"effectif_{eq_c.replace(' ', '_').replace('-', '')}.json")
+
+                    for mgr_obj in dictionnaires_managers.values():
+                        for j_obj in mgr_obj.joueuses.values():
+                            is_gard = isinstance(j_obj, Gardienne) or "gardien" in j_obj.poste.lower()
+                            infos_joueuses_total[j_obj.nom] = {"is_gardienne": is_gard}
+
+                    # On parcourt directement toutes les actions enregistrées dans le journal du match archivé
+                    for act in journal_actions_archive:
+                        act_type = act.get("type_action", "")
+                        det = act.get("details", "")
+                        
+                        if "Cage: " in det:
+                            try:
+                                # Extraction de la zone de terrain et de la cage depuis les détails de l'action
+                                z_ter_ext = "Inconnue"
+                                z_cage_ext = ""
+                                if "Terrain: " in det and " | Cage: " in det:
+                                    z_ter_ext = det.split("Terrain: ")[1].split(" | Cage: ")[0]
+                                    z_cage_ext = det.split("Cage: ")[1].rstrip("]")
+                                else:
+                                    z_cage_ext = det.split("[")[-1].rstrip("]")
+
+                                if zone_filtre_match != "Toutes les zones" and z_ter_ext != zone_filtre_match:
+                                    continue
+
+                                # Identification de la joueuse concernée par l'action dans le texte des détails
+                                nom_trouve = None
+                                for nom_j in infos_joueuses_total.keys():
+                                    if nom_j in det:
+                                        nom_trouve = nom_j
+                                        break
+
+                                if nom_trouve:
+                                    is_gardienne = infos_joueuses_total[nom_trouve]["is_gardienne"]
+                                    cible = agregat_gard_match_arc if is_gardienne else agregat_tirs_match_arc
                                     
-                                    if zone_ext not in cible:
-                                        cible[zone_ext] = {"succes": 0, "echec": 0}
+                                    if z_cage_ext not in cible:
+                                        cible[z_cage_ext] = {"succes": 0, "echec": 0}
                                     
-                                    if not est_gardienne_val:
+                                    if not is_gardienne:
                                         if act_type == "But":
-                                            cible[zone_ext]["succes"] += 1
+                                            cible[z_cage_ext]["succes"] += 1
                                         elif act_type == "Tir raté":
-                                            cible[zone_ext]["echec"] += 1
+                                            cible[z_cage_ext]["echec"] += 1
                                     else:
                                         if act_type == "Arrêt décisif":
-                                            cible[zone_ext]["succes"] += 1
+                                                cible[z_cage_ext]["succes"] += 1
                                         elif act_type == "But encaissé":
-                                            cible[zone_ext]["echec"] += 1
+                                                cible[z_cage_ext]["echec"] += 1
+                            except IndexError:
+                                pass
 
                     col_m_c1, col_m_c2 = st.columns(2)
                     with col_m_c1:
@@ -1138,7 +1406,13 @@ def run_staff_app(equipe_assignee):
                     st.divider()
                     st.markdown("### 🎯 Cartographie Globale Saison — Équipe & Gardiennes")
                     
-                    # Agrégation des stats cages sur toute la saison
+                    # Filtre par zone de terrain (Liste déroulante alignée)
+                    zone_filtre_saison_eq = st.selectbox(
+                        "📍 Filtrer par zone du terrain (Optionnel)", 
+                        ["Toutes les zones"] + ZONES_TERRAIN_LISTE, 
+                        key="filtre_saison_equipe"
+                    )
+
                     agregat_saison_tirs_eq = {}
                     agregat_saison_gard_eq = {}
                     for j in tous_membres_saison:
@@ -1146,24 +1420,37 @@ def run_staff_app(equipe_assignee):
                             for act in m.get("journal_actions", []):
                                 det = act.get("details", "")
                                 act_type = act.get("type_action", "")
-                                if f"#{j.numero} {j.nom}" in det and "[" in det and det.endswith("]"):
-                                    zone_ext = det.split("[")[-1].rstrip("]")
-                                    est_gardienne_val = isinstance(j, Gardienne) or "gardien" in j.poste.lower()
-                                    cible = agregat_saison_gard_eq if est_gardienne_val else agregat_saison_tirs_eq
-                                    
-                                    if zone_ext not in cible:
-                                        cible[zone_ext] = {"succes": 0, "echec": 0}
-                                    
-                                    if not est_gardienne_val:
-                                        if act_type == "But":
-                                            cible[zone_ext]["succes"] += 1
-                                        elif act_type == "Tir raté":
-                                            cible[zone_ext]["echec"] += 1
-                                    else:
-                                        if act_type == "Arrêt décisif":
-                                            cible[zone_ext]["succes"] += 1
-                                        elif act_type == "But encaissé":
-                                            cible[zone_ext]["echec"] += 1
+                                if f"#{j.numero} {j.nom}" in det and "Cage: " in det:
+                                    try:
+                                        z_ter_ext = "Inconnue"
+                                        z_cage_ext = ""
+                                        if "Terrain: " in det and " | Cage: " in det:
+                                            z_ter_ext = det.split("Terrain: ")[1].split(" | Cage: ")[0]
+                                            z_cage_ext = det.split("Cage: ")[1].rstrip("]")
+                                        else:
+                                            z_cage_ext = det.split("[")[-1].rstrip("]")
+
+                                        if zone_filtre_saison_eq != "Toutes les zones" and z_ter_ext != zone_filtre_saison_eq:
+                                            continue
+
+                                        est_gardienne_val = isinstance(j, Gardienne) or "gardien" in j.poste.lower()
+                                        cible = agregat_saison_gard_eq if est_gardienne_val else agregat_saison_tirs_eq
+                                        
+                                        if z_cage_ext not in cible:
+                                            cible[z_cage_ext] = {"succes": 0, "echec": 0}
+                                        
+                                        if not est_gardienne_val:
+                                            if act_type == "But":
+                                                cible[z_cage_ext]["succes"] += 1
+                                            elif act_type == "Tir raté":
+                                                cible[z_cage_ext]["echec"] += 1
+                                        else:
+                                            if act_type == "Arrêt décisif":
+                                                cible[z_cage_ext]["succes"] += 1
+                                            elif act_type == "But encaissé":
+                                                cible[z_cage_ext]["echec"] += 1
+                                    except IndexError:
+                                        pass
 
                     col_eq_c1, col_eq_c2 = st.columns(2)
                     with col_eq_c1:
@@ -1328,27 +1615,47 @@ def run_staff_app(equipe_assignee):
 
                             st.divider()
                             
+                            # Filtre par zone de terrain (Liste déroulante alignée)
+                            zone_filtre_saison_j = st.selectbox(
+                                "📍 Filtrer par zone du terrain (Optionnel)", 
+                                ["Toutes les zones"] + ZONES_TERRAIN_LISTE, 
+                                key=f"filtre_saison_j_{p.nom}"
+                            )
+
                             zones_saison_joueuse = {}
                             for m in p.historique_matchs:
                                 for act in m.get("journal_actions", []):
                                     det = act.get("details", "")
                                     act_type = act.get("type_action", "")
-                                    if f"#{p.numero} {p.nom}" in det and "[" in det and det.endswith("]"):
-                                        zone_ext = det.split("[")[-1].rstrip("]")
-                                        if zone_ext not in zones_saison_joueuse:
-                                            zones_saison_joueuse[zone_ext] = {"succes": 0, "echec": 0}
-                                        
-                                        est_gardienne_val = isinstance(p, Gardienne) or "gardien" in p.poste.lower()
-                                        if not est_gardienne_val:
-                                            if act_type == "But":
-                                                zones_saison_joueuse[zone_ext]["succes"] += 1
-                                            elif act_type == "Tir raté":
-                                                zones_saison_joueuse[zone_ext]["echec"] += 1
-                                        else:
-                                            if act_type == "Arrêt décisif":
-                                                zones_saison_joueuse[zone_ext]["succes"] += 1
-                                            elif act_type == "But encaissé":
-                                                zones_saison_joueuse[zone_ext]["echec"] += 1
+                                    if f"#{p.numero} {p.nom}" in det and "Cage: " in det:
+                                        try:
+                                            z_ter_ext = "Inconnue"
+                                            z_cage_ext = ""
+                                            if "Terrain: " in det and " | Cage: " in det:
+                                                z_ter_ext = det.split("Terrain: ")[1].split(" | Cage: ")[0]
+                                                z_cage_ext = det.split("Cage: ")[1].rstrip("]")
+                                            else:
+                                                z_cage_ext = det.split("[")[-1].rstrip("]")
+
+                                            if zone_filtre_saison_j != "Toutes les zones" and z_ter_ext != zone_filtre_saison_j:
+                                                continue
+
+                                            if z_cage_ext not in zones_saison_joueuse:
+                                                zones_saison_joueuse[z_cage_ext] = {"succes": 0, "echec": 0}
+                                            
+                                            est_gardienne_val = isinstance(p, Gardienne) or "gardien" in p.poste.lower()
+                                            if not est_gardienne_val:
+                                                if act_type == "But":
+                                                    zones_saison_joueuse[z_cage_ext]["succes"] += 1
+                                                elif act_type == "Tir raté":
+                                                    zones_saison_joueuse[z_cage_ext]["echec"] += 1
+                                            else:
+                                                if act_type == "Arrêt décisif":
+                                                    zones_saison_joueuse[z_cage_ext]["succes"] += 1
+                                                elif act_type == "But encaissé":
+                                                    zones_saison_joueuse[z_cage_ext]["echec"] += 1
+                                        except IndexError:
+                                            pass
 
                             titre_cage_j = (
                                 f"🎯 Cartographie Globale Saison — {p.nom} (✅ Arrêts | ❌ Encaissés)"
@@ -1374,6 +1681,13 @@ def run_staff_app(equipe_assignee):
                             noms_matchs_joueuse = [m["match"] for m in p.historique_matchs]
                             match_selectionne_j = st.selectbox("Filtrer par rencontre", noms_matchs_joueuse, key=f"sel_match_j_{equipe_assignee}_{p.nom}")
                             
+                            # Filtre par zone de terrain (Liste déroulante alignée)
+                            zone_filtre_match_j = st.selectbox(
+                                "📍 Filtrer par zone du terrain (Optionnel)", 
+                                ["Toutes les zones"] + ZONES_TERRAIN_LISTE, 
+                                key=f"filtre_match_spec_j_{p.nom}_{match_selectionne_j}"
+                            )
+
                             match_donnees_specifiques = next((m for m in p.historique_matchs if m["match"] == match_selectionne_j), None)
                             zones_match_specifique = {}
                             
@@ -1381,22 +1695,35 @@ def run_staff_app(equipe_assignee):
                                 for act in match_donnees_specifiques.get("journal_actions", []):
                                     det = act.get("details", "")
                                     act_type = act.get("type_action", "")
-                                    if f"#{p.numero} {p.nom}" in det and "[" in det and det.endswith("]"):
-                                        zone_ext = det.split("[")[-1].rstrip("]")
-                                        if zone_ext not in zones_match_specifique:
-                                            zones_match_specifique[zone_ext] = {"succes": 0, "echec": 0}
-                                        
-                                        est_gardienne_val = isinstance(p, Gardienne) or "gardien" in p.poste.lower()
-                                        if not est_gardienne_val:
-                                            if act_type == "But":
-                                                zones_match_specifique[zone_ext]["succes"] += 1
-                                            elif act_type == "Tir raté":
-                                                zones_match_specifique[zone_ext]["echec"] += 1
-                                        else:
-                                            if act_type == "Arrêt décisif":
-                                                zones_match_specifique[zone_ext]["succes"] += 1
-                                            elif act_type == "But encaissé":
-                                                zones_match_specifique[zone_ext]["echec"] += 1
+                                    if f"#{p.numero} {p.nom}" in det and "Cage: " in det:
+                                        try:
+                                            z_ter_ext = "Inconnue"
+                                            z_cage_ext = ""
+                                            if "Terrain: " in det and " | Cage: " in det:
+                                                z_ter_ext = det.split("Terrain: ")[1].split(" | Cage: ")[0]
+                                                z_cage_ext = det.split("Cage: ")[1].rstrip("]")
+                                            else:
+                                                z_cage_ext = det.split("[")[-1].rstrip("]")
+
+                                            if zone_filtre_match_j != "Toutes les zones" and z_ter_ext != zone_filtre_match_j:
+                                                continue
+
+                                            if z_cage_ext not in zones_match_specifique:
+                                                zones_match_specifique[z_cage_ext] = {"succes": 0, "echec": 0}
+                                            
+                                            est_gardienne_val = isinstance(p, Gardienne) or "gardien" in p.poste.lower()
+                                            if not est_gardienne_val:
+                                                if act_type == "But":
+                                                    zones_match_specifique[z_cage_ext]["succes"] += 1
+                                                elif act_type == "Tir raté":
+                                                    zones_match_specifique[z_cage_ext]["echec"] += 1
+                                            else:
+                                                if act_type == "Arrêt décisif":
+                                                    zones_match_specifique[z_cage_ext]["succes"] += 1
+                                                elif act_type == "But encaissé":
+                                                    zones_match_specifique[z_cage_ext]["echec"] += 1
+                                        except IndexError:
+                                            pass
 
                             titre_cage_match_j = (
                                 f"Détail du match '{match_selectionne_j}' — {p.nom} (✅ Arrêts | ❌ Encaissés)"
