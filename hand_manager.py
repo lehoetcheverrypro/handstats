@@ -1,5 +1,27 @@
 import json
 import os
+import re
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_ROOT = os.environ.get("HANDSTAT_DATA_DIR", os.path.join(BASE_DIR, "data"))
+
+
+def normaliser_slug_club(club_slug: str | None) -> str:
+    if not club_slug:
+        return "bordeaux_etudiants_club"
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", str(club_slug).strip().lower()).strip("_")
+    return slug or "club_default"
+
+
+def get_dossier_club(club_slug: str | None) -> str:
+    dossier = os.path.join(DATA_ROOT, "clubs", normaliser_slug_club(club_slug))
+    os.makedirs(dossier, exist_ok=True)
+    return dossier
+
+
+def get_nom_fichier_equipe(nom_equipe: str) -> str:
+    return f"effectif_{nom_equipe.replace(' ', '_').replace('-', '')}.json"
+
 
 class Joueuse:
     def __init__(self, nom, poste, numero):
@@ -12,6 +34,7 @@ class Joueuse:
 
     def to_dict(self):
         raise NotImplementedError
+
 
 class JoueuseDeChamp(Joueuse):
     def __init__(self, nom, poste, numero):
@@ -54,8 +77,9 @@ class JoueuseDeChamp(Joueuse):
             "pertes_balles_provoquees": self.pertes_balles_provoquees,
             "cartons_jaunes": self.cartons_jaunes,
             "exclusions_2min": self.exclusions_2min,
-            "historique_matchs": self.historique_matchs
+            "historique_matchs": self.historique_matchs,
         }
+
 
 class Gardienne(Joueuse):
     def __init__(self, nom, poste, numero):
@@ -84,13 +108,16 @@ class Gardienne(Joueuse):
             "tirs": self.tirs,
             "cartons_jaunes": self.cartons_jaunes,
             "exclusions_2min": self.exclusions_2min,
-            "historique_matchs": self.historique_matchs
+            "historique_matchs": self.historique_matchs,
         }
 
+
 class EquipeManager:
-    def __init__(self, fichier="effectif_hand.json"):
-        dossier_script = os.path.dirname(os.path.abspath(__file__))
-        self.fichier = os.path.join(dossier_script, fichier)
+    def __init__(self, fichier="effectif_hand.json", club_slug=None):
+        self.club_slug = normaliser_slug_club(club_slug)
+        self.dossier_club = get_dossier_club(self.club_slug)
+        nom_base = os.path.basename(fichier)
+        self.fichier = os.path.join(self.dossier_club, nom_base)
         self.joueuses = {}
         self.charger_donnees()
 
@@ -107,6 +134,7 @@ class EquipeManager:
             self.sauvegarder_donnees()
 
     def sauvegarder_donnees(self):
+        os.makedirs(self.dossier_club, exist_ok=True)
         data = {nom: j.to_dict() for nom, j in self.joueuses.items()}
         with open(self.fichier, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
@@ -118,15 +146,17 @@ class EquipeManager:
                     data = json.load(f)
                     self.joueuses = {}
                     for nom, d in data.items():
-                        if d["type"] == "gardienne":
-                            j = Gardienne(d["nom"], d["poste"], d["numero"])
+                        if not isinstance(d, dict):
+                            continue
+                        if d.get("type") == "gardienne":
+                            j = Gardienne(d.get("nom", nom), d.get("poste", "Gardienne"), d.get("numero", 1))
                             j.arrets = d.get("arrets", 0)
                             j.tirs_subis = d.get("tirs_subis", 0)
                             j.buts_encaisses = d.get("buts_encaisses", 0)
                             j.buts = d.get("buts", 0)
                             j.tirs = d.get("tirs", 0)
                         else:
-                            j = JoueuseDeChamp(d["nom"], d["poste"], d["numero"])
+                            j = JoueuseDeChamp(d.get("nom", nom), d.get("poste", "Arrière gauche"), d.get("numero", 1))
                             j.buts = d.get("buts", 0)
                             j.tirs = d.get("tirs", 0)
                             j.passes_decisives = d.get("passes_decisives", 0)
@@ -147,16 +177,35 @@ class EquipeManager:
             except Exception as e:
                 print(f"Erreur lors du chargement : {e}")
 
-    def archiver_match(self, nom_match, attaques_adv_data=None, joueuses_actives=None, journal_actions=None, commentaires_staff=None, numeros_match=None, pretes_dict=None):
+    def archiver_match(
+        self,
+        nom_match,
+        attaques_adv_data=None,
+        joueuses_actives=None,
+        journal_actions=None,
+        commentaires_staff=None,
+        numeros_match=None,
+        pretes_dict=None,
+        club_equipes=None,
+    ):
         if numeros_match is None:
             numeros_match = {}
         if pretes_dict is None:
             pretes_dict = {}
+        if club_equipes is None:
+            club_equipes = []
 
-        lignes_champ = [j for j in self.joueuses.values() if isinstance(j, JoueuseDeChamp) and (joueuses_actives is None or j.nom in joueuses_actives)]
-        lignes_gard = [j for j in self.joueuses.values() if isinstance(j, Gardienne) and (joueuses_actives is None or j.nom in joueuses_actives)]
-        
-        # On ajoute les prêtées actives pour le calcul du score de l'équipe
+        lignes_champ = [
+            j
+            for j in self.joueuses.values()
+            if isinstance(j, JoueuseDeChamp) and (joueuses_actives is None or j.nom in joueuses_actives)
+        ]
+        lignes_gard = [
+            j
+            for j in self.joueuses.values()
+            if isinstance(j, Gardienne) and (joueuses_actives is None or j.nom in joueuses_actives)
+        ]
+
         for j_p in pretes_dict.values():
             if joueuses_actives is None or j_p.nom in joueuses_actives:
                 if isinstance(j_p, JoueuseDeChamp):
@@ -169,7 +218,6 @@ class EquipeManager:
             score_eq += g.buts
         score_adv = sum(g.buts_encaisses for g in lignes_gard)
 
-        # 1. Archivage pour l'effectif principal
         for nom, j in self.joueuses.items():
             if joueuses_actives is not None and j.nom not in joueuses_actives:
                 continue
@@ -182,59 +230,78 @@ class EquipeManager:
                 "numero_match": numero_a_archiver,
                 "attaques_adversaires": attaques_adv_data or {},
                 "journal_actions": journal_actions or [],
-                "commentaires_staff": commentaires_staff or []
+                "commentaires_staff": commentaires_staff or [],
             }
 
             if isinstance(j, JoueuseDeChamp):
                 match_data = {
                     **match_common_data,
-                    "buts": j.buts, "tirs": j.tirs, "passes_decisives": j.passes_decisives,
-                    "pertes_passe": j.pertes_de_balles_passe, "pertes_faute": j.pertes_de_balles_faute,
-                    "duels_off_gagnes": j.duels_off_gagnes, "duels_off_perdus": j.duels_off_perdus,
-                    "duels_def_gagnes": j.duels_def_gagnes, "duels_def_perdus": j.duels_def_perdus,
-                    "neutralisations": j.neutralisations, "interceptions": j.interceptions,
+                    "buts": j.buts,
+                    "tirs": j.tirs,
+                    "passes_decisives": j.passes_decisives,
+                    "pertes_passe": j.pertes_de_balles_passe,
+                    "pertes_faute": j.pertes_de_balles_faute,
+                    "duels_off_gagnes": j.duels_off_gagnes,
+                    "duels_off_perdus": j.duels_off_perdus,
+                    "duels_def_gagnes": j.duels_def_gagnes,
+                    "duels_def_perdus": j.duels_def_perdus,
+                    "neutralisations": j.neutralisations,
+                    "interceptions": j.interceptions,
                     "balles_provoquees": j.pertes_balles_provoquees,
-                    "cartons_jaunes": j.cartons_jaunes, "exclusions_2min": j.exclusions_2min,
+                    "cartons_jaunes": j.cartons_jaunes,
+                    "exclusions_2min": j.exclusions_2min,
                 }
             else:
                 match_data = {
                     **match_common_data,
-                    "arrets": j.arrets, "tirs_subis": j.tirs_subis,
-                    "buts_encaisses": j.buts_encaisses, "buts": j.buts, "tirs": j.tirs,
-                    "cartons_jaunes": j.cartons_jaunes, "exclusions_2min": j.exclusions_2min,
+                    "arrets": j.arrets,
+                    "tirs_subis": j.tirs_subis,
+                    "buts_encaisses": j.buts_encaisses,
+                    "buts": j.buts,
+                    "tirs": j.tirs,
+                    "cartons_jaunes": j.cartons_jaunes,
+                    "exclusions_2min": j.exclusions_2min,
                 }
-            
+
             j.historique_matchs.append(match_data)
-            
-            # Remise à zéro
+
             j.cartons_jaunes = 0
             j.exclusions_2min = 0
             if isinstance(j, JoueuseDeChamp):
-                j.buts = 0; j.tirs = 0; j.passes_decisives = 0
-                j.pertes_de_balles_passe = 0; j.pertes_de_balles_faute = 0
-                j.duels_off_gagnes = 0; j.duels_off_perdus = 0
-                j.duels_def_gagnes = 0; j.duels_def_perdus = 0
-                j.neutralisations = 0; j.interceptions = 0; j.pertes_balles_provoquees = 0
+                j.buts = 0
+                j.tirs = 0
+                j.passes_decisives = 0
+                j.pertes_de_balles_passe = 0
+                j.pertes_de_balles_faute = 0
+                j.duels_off_gagnes = 0
+                j.duels_off_perdus = 0
+                j.duels_def_gagnes = 0
+                j.duels_def_perdus = 0
+                j.neutralisations = 0
+                j.interceptions = 0
+                j.pertes_balles_provoquees = 0
             elif isinstance(j, Gardienne):
-                j.arrets = 0; j.tirs_subis = 0; j.buts_encaisses = 0; j.buts = 0; j.tirs = 0
+                j.arrets = 0
+                j.tirs_subis = 0
+                j.buts_encaisses = 0
+                j.buts = 0
+                j.tirs = 0
 
         self.sauvegarder_donnees()
 
-        # 2. Archivage AUSSI pour les joueuses prêtées/surclassées dans leur propre fichier d'équipe d'origine
-        club_equipes = ["Séniors M", "Séniors F", "-18M", "-15F"]
-        toutes_du_club = self.recuperer_toutes_les_joueuses_du_club(club_equipes)
+        # Archivage des joueuses surclassées uniquement au sein du même club
+        toutes_du_club = self.recuperer_toutes_les_joueuses_du_club(club_equipes, club_slug=self.club_slug)
 
         for nom_p, j_p in pretes_dict.items():
             if joueuses_actives is not None and j_p.nom not in joueuses_actives:
                 continue
             if nom_p in toutes_du_club:
                 eq_orig = toutes_du_club[nom_p]["equipe_origine"]
-                nom_f_orig = f"effectif_{eq_orig.replace(' ', '_').replace('-', '')}.json"
-                mgr_orig = EquipeManager(fichier=nom_f_orig)
+                nom_f_orig = get_nom_fichier_equipe(eq_orig)
+                mgr_orig = EquipeManager(fichier=nom_f_orig, club_slug=self.club_slug)
                 if nom_p in mgr_orig.joueuses:
                     jp_orig = mgr_orig.joueuses[nom_p]
-                    
-                    # On recopie les stats du match sur l'objet d'origine
+
                     jp_orig.cartons_jaunes = j_p.cartons_jaunes
                     jp_orig.exclusions_2min = j_p.exclusions_2min
                     if isinstance(jp_orig, JoueuseDeChamp):
@@ -265,33 +332,43 @@ class EquipeManager:
                         "numero_match": numero_a_archiver_p,
                         "attaques_adversaires": attaques_adv_data or {},
                         "journal_actions": journal_actions or [],
-                        "commentaires_staff": commentaires_staff or []
+                        "commentaires_staff": commentaires_staff or [],
                     }
 
                     if isinstance(jp_orig, JoueuseDeChamp):
                         match_data_p = {
                             **match_common_data_p,
-                            "buts": jp_orig.buts, "tirs": jp_orig.tirs, "passes_decisives": jp_orig.passes_decisives,
-                            "pertes_passe": jp_orig.pertes_de_balles_passe, "pertes_faute": jp_orig.pertes_de_balles_faute,
-                            "duels_off_gagnes": jp_orig.duels_off_gagnes, "duels_off_perdus": jp_orig.duels_off_perdus,
-                            "duels_def_gagnes": jp_orig.duels_def_gagnes, "duels_def_perdus": jp_orig.duels_def_perdus,
-                            "neutralisations": jp_orig.neutralisations, "interceptions": jp_orig.interceptions,
+                            "buts": jp_orig.buts,
+                            "tirs": jp_orig.tirs,
+                            "passes_decisives": jp_orig.passes_decisives,
+                            "pertes_passe": jp_orig.pertes_de_balles_passe,
+                            "pertes_faute": jp_orig.pertes_de_balles_faute,
+                            "duels_off_gagnes": jp_orig.duels_off_gagnes,
+                            "duels_off_perdus": jp_orig.duels_off_perdus,
+                            "duels_def_gagnes": jp_orig.duels_def_gagnes,
+                            "duels_def_perdus": jp_orig.duels_def_perdus,
+                            "neutralisations": jp_orig.neutralisations,
+                            "interceptions": jp_orig.interceptions,
                             "balles_provoquees": jp_orig.pertes_balles_provoquees,
-                            "cartons_jaunes": jp_orig.cartons_jaunes, "exclusions_2min": jp_orig.exclusions_2min,
+                            "cartons_jaunes": jp_orig.cartons_jaunes,
+                            "exclusions_2min": jp_orig.exclusions_2min,
                         }
                     else:
                         match_data_p = {
                             **match_common_data_p,
-                            "arrets": jp_orig.arrets, "tirs_subis": jp_orig.tirs_subis,
-                            "buts_encaisses": jp_orig.buts_encaisses, "buts": jp_orig.buts, "tirs": jp_orig.tirs,
-                            "cartons_jaunes": jp_orig.cartons_jaunes, "exclusions_2min": jp_orig.exclusions_2min,
+                            "arrets": jp_orig.arrets,
+                            "tirs_subis": jp_orig.tirs_subis,
+                            "buts_encaisses": jp_orig.buts_encaisses,
+                            "buts": jp_orig.buts,
+                            "tirs": jp_orig.tirs,
+                            "cartons_jaunes": jp_orig.cartons_jaunes,
+                            "exclusions_2min": jp_orig.exclusions_2min,
                         }
 
                     jp_orig.historique_matchs.append(match_data_p)
                     mgr_orig.sauvegarder_donnees()
 
     def sauvegarder_commentaire_post_match(self, nom_match, texte_bilan):
-        """Enregistre ou met à jour le bilan écrit post-match dans l'historique."""
         for j in self.joueuses.values():
             for m in j.historique_matchs:
                 if m.get("match") == nom_match:
@@ -299,30 +376,23 @@ class EquipeManager:
         self.sauvegarder_donnees()
 
     @staticmethod
-    def recuperer_toutes_les_joueuses_du_club(club_equipes):
-        """
-        Scanne les fichiers JSON de toutes les équipes du club 
-        pour retourner un dictionnaire global {nom_joueuse: {"equipe": nom_eq, "objet": instance_joueuse}}
-        Utile pour gérer les surclassements.
-        """
+    def recuperer_toutes_les_joueuses_du_club(club_equipes, club_slug=None):
         joueuses_club = {}
-        for eq in club_equipes:
-            nom_fichier = f"effectif_{eq.replace(' ', '_').replace('-', '')}.json"
-            dossier_script = os.path.dirname(os.path.abspath(__file__))
-            chemin_complet = os.path.join(dossier_script, nom_fichier)
-            
+        dossier_c = get_dossier_club(club_slug)
+        for eq in club_equipes or []:
+            nom_fichier = get_nom_fichier_equipe(eq)
+            chemin_complet = os.path.join(dossier_c, nom_fichier)
             if os.path.exists(chemin_complet):
                 try:
                     with open(chemin_complet, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         for nom, d in data.items():
-                            # On évite les doublons stricts si déjà vu
-                            if nom not in joueuses_club:
+                            if nom not in joueuses_club and isinstance(d, dict):
                                 joueuses_club[nom] = {
                                     "equipe_origine": eq,
                                     "poste": d.get("poste"),
                                     "numero": d.get("numero"),
-                                    "type": d.get("type")
+                                    "type": d.get("type"),
                                 }
                 except Exception:
                     pass
@@ -331,10 +401,8 @@ class EquipeManager:
     def transferer_joueuse(self, nom_joueuse, autre_manager):
         if nom_joueuse in self.joueuses:
             joueuse_obj = self.joueuses[nom_joueuse]
-            # On l'ajoute dans l'autre équipe
             autre_manager.joueuses[nom_joueuse] = joueuse_obj
             autre_manager.sauvegarder_donnees()
-            # On la supprime de l'équipe actuelle
             self.supprimer_joueuse(nom_joueuse)
             return True
         return False

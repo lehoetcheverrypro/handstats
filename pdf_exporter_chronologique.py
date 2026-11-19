@@ -1,4 +1,5 @@
 import os
+import re
 from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -6,42 +7,54 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, KeepTogether
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.units import cm
+
 
 def detecter_genre(nom_equipe):
     nom_l = str(nom_equipe).lower()
-    if any(k in nom_l for k in ["f", "fem", "fille", "féminine"]):
+    if re.search(r'(^|[\s(\[_-])(f|fem|feminine|féminine|fille|filles)([\s)\]_.-]|$)', nom_l):
         return "F"
-    elif any(k in nom_l for k in ["m", "garçon", "masc", "masculin", "h"]):
+    if re.search(r'(^|[\s(\[_-])(m|masc|masculin|garcon|garçon|garcons|garçons|h)([\s)\]_.-]|$)', nom_l):
         return "M"
     return "F"
 
-def creer_bandeau_en_tete(club_nom, equipe_nom, styles):
+
+def _resoudre_logo_club(dossier_club=None):
+    if dossier_club:
+        candidat_club = os.path.join(dossier_club, "logo_club.png")
+        if os.path.exists(candidat_club):
+            return candidat_club
+    if os.path.exists("logo_club.png"):
+        return "logo_club.png"
+    return None
+
+
+def creer_bandeau_en_tete(club_nom, equipe_nom, styles, dossier_club=None):
     """Crée un bandeau professionnel moderne avec le club, l'équipe et le logo."""
-    logo_path = "logo_club.png"
-    
+    logo_path = _resoudre_logo_club(dossier_club)
+
     style_club = ParagraphStyle(
-        'BandeauClub', parent=styles['Normal'], 
+        'BandeauClub', parent=styles['Normal'],
         fontName='Helvetica-Bold', fontSize=13, leading=15, textColor=colors.white
     )
     style_team = ParagraphStyle(
-        'BandeauTeam', parent=styles['Normal'], 
+        'BandeauTeam', parent=styles['Normal'],
         fontName='Helvetica-Bold', fontSize=9, leading=12, textColor=colors.HexColor("#38BDF8")
     )
     style_tag = ParagraphStyle(
-        'BandeauTag', parent=styles['Normal'], 
+        'BandeauTag', parent=styles['Normal'],
         fontName='Helvetica', fontSize=8, leading=10, textColor=colors.HexColor("#CBD5E1")
     )
-    
+
     text_content = [
         Paragraph(club_nom.upper(), style_club),
         Spacer(1, 2),
         Paragraph(f"CELLULE PERFORMANCE & ANALYSE VIDEO — Équipe : {equipe_nom}", style_team),
         Paragraph("Document interne réservé au Staff Technique", style_tag)
     ]
-    
-    if os.path.exists(logo_path):
+
+    if logo_path and os.path.exists(logo_path):
         try:
             img = Image(logo_path, width=42, height=42)
             img.hAlign = 'RIGHT'
@@ -62,10 +75,11 @@ def creer_bandeau_en_tete(club_nom, equipe_nom, styles):
     ]))
     return bandeau_table
 
+
 def _style_ligne_action(type_action):
     """Retourne (couleur_fond, couleur_texte_action) selon le type d'action."""
-    act_low = type_action.lower()
-    if "but encaissé" in act_low or "tir raté" in act_low or "perte" in act_low or "duel" in act_low and "perdu" in act_low:
+    act_low = str(type_action).lower()
+    if "but encaissé" in act_low or "tir raté" in act_low or "perte" in act_low or ("duel" in act_low and "perdu" in act_low):
         return colors.HexColor("#FEF2F2"), "#B91C1C"
     elif "but" in act_low or "arrêt" in act_low or "gagné" in act_low or "interception" in act_low or "provoquée" in act_low or "passe décisive" in act_low or "neutralisation" in act_low:
         return colors.HexColor("#F0FDF4"), "#15803D"
@@ -75,10 +89,11 @@ def _style_ligne_action(type_action):
         return colors.HexColor("#EFF6FF"), "#1D4ED8"
     return colors.white, "#1E293B"
 
+
 def generer_pdf_chronologique(
-    nom_match, score_eq, score_adv, historique_actions, 
-    attaques_adv, commentaires_staff, club_nom="Mon Club", 
-    equipe_nom="Équipe", bilan_post_match=""
+    nom_match, score_eq, score_adv, historique_actions,
+    attaques_adv, commentaires_staff, club_nom="Mon Club",
+    equipe_nom="Équipe", bilan_post_match="", dossier_club=None
 ):
     genre = detecter_genre(equipe_nom)
     col_detail_libelle = "Joueur / Détail de la séquence" if genre == "M" else "Joueuse / Détail de la séquence"
@@ -87,13 +102,13 @@ def generer_pdf_chronologique(
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        rightMargin=1.5*cm, leftMargin=1.5*cm,
-        topMargin=1.4*cm, bottomMargin=1.4*cm
+        rightMargin=1.5 * cm, leftMargin=1.5 * cm,
+        topMargin=1.4 * cm, bottomMargin=1.4 * cm
     )
-    
+
     story = []
     styles = getSampleStyleSheet()
-    
+
     navy = colors.HexColor("#0F172A")
     slate_dark = colors.HexColor("#1E293B")
     slate_muted = colors.HexColor("#475569")
@@ -127,7 +142,7 @@ def generer_pdf_chronologique(
     )
 
     # 1. EN-TÊTE ET CARTOUCHE SCORE
-    story.append(creer_bandeau_en_tete(club_nom, equipe_nom, styles))
+    story.append(creer_bandeau_en_tete(club_nom, equipe_nom, styles, dossier_club=dossier_club))
     story.append(Spacer(1, 12))
 
     story.append(Paragraph("RAPPORT D'ANALYSE TACTIQUE & CHRONOLOGIQUE", title_style))
@@ -160,9 +175,10 @@ def generer_pdf_chronologique(
     story.append(Spacer(1, 10))
 
     # 2. SYNTHÈSE EXÉCUTIVE : BILAN POST-MATCH DU STAFF
-    bilan_elements = []
-    bilan_elements.append(Paragraph("1. SYNTHÈSE EXÉCUTIVE — ANALYSE POST-MATCH DU STAFF", section_header_style))
-    
+    bilan_elements = [
+        Paragraph("1. SYNTHÈSE EXÉCUTIVE — ANALYSE POST-MATCH DU STAFF", section_header_style)
+    ]
+
     if bilan_post_match and bilan_post_match.strip():
         texte_formate = bilan_post_match.strip().replace('\n', '<br/>')
         contenu_bilan = Paragraph(texte_formate, ParagraphStyle(
@@ -189,14 +205,15 @@ def generer_pdf_chronologique(
     story.append(Spacer(1, 8))
 
     # 3. ANALYSE TACTIQUE : SYSTÈMES D'ATTAQUE ADVERSES
-    tactique_elements = []
-    tactique_elements.append(Paragraph("2. ANALYSE TACTIQUE — SYSTÈMES D'ATTAQUE ADVERSES", section_header_style))
-    
+    tactique_elements = [
+        Paragraph("2. ANALYSE TACTIQUE — SYSTÈMES D'ATTAQUE ADVERSES", section_header_style)
+    ]
+
     if attaques_adv and any(v > 0 for v in attaques_adv.values()):
         total_att = sum(attaques_adv.values())
         headers_att = list(attaques_adv.keys()) + ["Total Séquences"]
-        vals_att = [f"<b>{v}</b> ({round(v/total_att*100)}%)" if total_att > 0 else "0" for v in attaques_adv.values()] + [f"<b>{total_att}</b>"]
-        
+        vals_att = [f"<b>{v}</b> ({round(v / total_att * 100)}%)" if total_att > 0 else "0" for v in attaques_adv.values()] + [f"<b>{total_att}</b>"]
+
         att_data = [
             [Paragraph(h, table_header_style) for h in headers_att],
             [Paragraph(val, bold_center_style) for val in vals_att]
@@ -220,12 +237,13 @@ def generer_pdf_chronologique(
     story.append(Spacer(1, 8))
 
     # 4. OBSERVATIONS & FAITS MARQUANTS EN DIRECT (NOTES DU BANC)
-    notes_elements = []
-    notes_elements.append(Paragraph("3. OBSERVATIONS & FAITS MARQUANTS EN DIRECT (NOTES DU BANC)", section_header_style))
-    
+    notes_elements = [
+        Paragraph("3. OBSERVATIONS & FAITS MARQUANTS EN DIRECT (NOTES DU BANC)", section_header_style)
+    ]
+
     if commentaires_staff:
         com_data = [[
-            Paragraph("Chrono", table_header_style), 
+            Paragraph("Chrono", table_header_style),
             Paragraph("Observation / Fait de match relevé", table_header_style)
         ]]
         for c in commentaires_staff:
@@ -252,14 +270,14 @@ def generer_pdf_chronologique(
 
     # 5. JOURNAL CHRONOLOGIQUE DES ACTIONS (PLAY-BY-PLAY)
     story.append(Paragraph("4. DÉROULÉ CHRONOLOGIQUE DES ACTIONS (PLAY-BY-PLAY)", section_header_style))
-    
+
     if historique_actions:
         act_data = [[
-            Paragraph("Chrono", table_header_style), 
-            Paragraph("Type d'Action", table_header_style), 
+            Paragraph("Chrono", table_header_style),
+            Paragraph("Type d'Action", table_header_style),
             Paragraph(col_detail_libelle, table_header_style)
         ]]
-        
+
         table_styles = [
             ('BACKGROUND', (0, 0), (-1, 0), navy),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
@@ -272,7 +290,7 @@ def generer_pdf_chronologique(
         for idx, act in enumerate(historique_actions, start=1):
             t_act_str = act.get("type_action", "")
             bg_row, txt_hex = _style_ligne_action(t_act_str)
-            
+
             act_data.append([
                 Paragraph(f"<b>{act.get('temps', '00:00')}</b>", bold_center_style),
                 Paragraph(f"<font color='{txt_hex}'><b>{t_act_str}</b></font>", normal_style),
