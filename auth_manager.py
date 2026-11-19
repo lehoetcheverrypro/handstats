@@ -312,12 +312,19 @@ def afficher_espace_super_admin():
                         st.rerun()
 
                 with st.expander(f"🗑️ Supprimer définitivement {nom_c}"):
+                    comptes_lies = [
+                        _uname for _uname, _udata in users.items()
+                        if _udata.get("club") == nom_c
+                        and _udata.get("role") != "super_admin"
+                        and _uname != st.session_state.user_session.get("username")
+                    ]
                     st.warning(
-                        f"Cette action supprime **{nom_c}** du registre, détache les comptes rattachés "
-                        f"et efface son dossier de données (`{slug_c}` : effectifs, matchs, brouillons et file de synchro)."
+                        f"Cette action supprime définitivement **{nom_c}** du registre, "
+                        f"efface son dossier de données (`{slug_c}` : effectifs, matchs, brouillons et file de synchro) "
+                        f"et supprime les comptes rattachés ({', '.join(comptes_lies) if comptes_lies else 'aucun'})."
                     )
                     confirmer_suppr = st.checkbox(
-                        f"Je confirme la suppression complète de '{nom_c}'",
+                        f"Je confirme la suppression complète de '{nom_c}' et de ses comptes",
                         key=f"confirm_del_club_{nom_c}",
                     )
                     if st.button(
@@ -326,14 +333,12 @@ def afficher_espace_super_admin():
                         disabled=not confirmer_suppr,
                         key=f"btn_del_club_{nom_c}",
                     ):
-                        # 1. Retirer le club du registre
-                        del clubs[nom_c]
+                        # 1. Supprimer les comptes rattachés au club (hors super_admin et session courante)
+                        for _uname in comptes_lies:
+                            del users[_uname]
 
-                        # 2. Détacher les utilisateurs liés à ce club
-                        for _uname, _udata in users.items():
-                            if _udata.get("club") == nom_c:
-                                _udata["club"] = None
-                                _udata["equipes"] = []
+                        # 2. Retirer le club du registre
+                        del clubs[nom_c]
 
                         # 3. Supprimer les données disque du club
                         supprimer_dossier_club(slug_c)
@@ -343,7 +348,9 @@ def afficher_espace_super_admin():
                             st.session_state.club_equipes = []
 
                         sauvegarder_registre(reg)
-                        st.success(f"Le club '{nom_c}' et ses données ont été supprimés.")
+                        st.success(
+                            f"Le club '{nom_c}', ses données et {len(comptes_lies)} compte(s) rattaché(s) ont été supprimés."
+                        )
                         st.rerun()
 
     # --- ONGLET 2 : COMPTES ---
