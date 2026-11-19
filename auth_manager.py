@@ -2,6 +2,8 @@ import json
 import os
 import re
 import streamlit as st
+import streamlit as st
+from hand_manager import supprimer_dossier_club
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REGISTRY_FILE = os.path.join(BASE_DIR, "clubs_registry.json")
@@ -116,7 +118,7 @@ def ecran_connexion():
     st.markdown("## 🔐 Connexion à *HandStats Pro*")
 
     with st.form("login_form"):
-        username = st.text_input("Identifiant").strip()
+        username = st.text_input("Identifiant").strip().lower()
         password = st.text_input("Mot de passe", type="password")
         submit = st.form_submit_button("Se connecter", use_container_width=True)
 
@@ -125,7 +127,9 @@ def ecran_connexion():
             users = reg["users"]
             clubs = reg["clubs"]
 
-            if username in users and users[username]["password"] == password:
+            matched_username = next((k for k in users.keys() if k.strip().lower() == username), None)
+            if matched_username and users[matched_username]["password"] == password:
+                username = matched_username
                 user_info = users[username]
                 role = user_info["role"]
                 club_nom = user_info.get("club")
@@ -279,10 +283,11 @@ def afficher_espace_super_admin():
         st.markdown("---")
         st.subheader("📋 Clubs enregistrés & État des droits")
         for nom_c, info_c in list(clubs.items()):
+            slug_c = info_c.get("slug", slugify_club(nom_c))
             with st.container(border=True):
                 col_a, col_b, col_c = st.columns([2.5, 2, 1.5])
                 statut_badge = "🟢 Actif" if info_c.get("actif", True) else "🔴 Suspendu"
-                col_a.markdown(f"**{nom_c}** (`{info_c.get('slug', slugify_club(nom_c))}`)")
+                col_a.markdown(f"**{nom_c}** (`{slug_c}`)")
                 col_a.caption(f"Statut : {statut_badge}")
                 col_b.caption(f"Équipes : {', '.join(info_c.get('equipes', [])) or 'Aucune'}")
 
@@ -306,6 +311,41 @@ def afficher_espace_super_admin():
                         st.success("Équipes mises à jour.")
                         st.rerun()
 
+                with st.expander(f"🗑️ Supprimer définitivement {nom_c}"):
+                    st.warning(
+                        f"Cette action supprime **{nom_c}** du registre, détache les comptes rattachés "
+                        f"et efface son dossier de données (`{slug_c}` : effectifs, matchs, brouillons et file de synchro)."
+                    )
+                    confirmer_suppr = st.checkbox(
+                        f"Je confirme la suppression complète de '{nom_c}'",
+                        key=f"confirm_del_club_{nom_c}",
+                    )
+                    if st.button(
+                        "🗑️ Supprimer définitivement le club",
+                        type="primary",
+                        disabled=not confirmer_suppr,
+                        key=f"btn_del_club_{nom_c}",
+                    ):
+                        # 1. Retirer le club du registre
+                        del clubs[nom_c]
+
+                        # 2. Détacher les utilisateurs liés à ce club
+                        for _uname, _udata in users.items():
+                            if _udata.get("club") == nom_c:
+                                _udata["club"] = None
+                                _udata["equipes"] = []
+
+                        # 3. Supprimer les données disque du club
+                        supprimer_dossier_club(slug_c)
+
+                        # 4. Nettoyer la session si besoin
+                        if st.session_state.get("club_equipes") and st.session_state.user_session.get("club") == nom_c:
+                            st.session_state.club_equipes = []
+
+                        sauvegarder_registre(reg)
+                        st.success(f"Le club '{nom_c}' et ses données ont été supprimés.")
+                        st.rerun()
+
     # --- ONGLET 2 : COMPTES ---
     with tab_comptes:
         st.subheader("➕ Créer un compte utilisateur")
@@ -314,7 +354,7 @@ def afficher_espace_super_admin():
         with st.form("form_super_admin_create_user"):
             u1, u2, u3 = st.columns(3)
             with u1:
-                u_login = st.text_input("Identifiant").strip()
+                u_login = st.text_input("Identifiant").strip().lower()
                 u_pass = st.text_input("Mot de passe", type="password")
             with u2:
                 u_nom = st.text_input("Nom complet")
@@ -325,10 +365,13 @@ def afficher_espace_super_admin():
                 u_equipes = st.multiselect("Équipes autorisées (si role = staff)", eq_du_club)
 
             if st.form_submit_button("Créer le compte", type="primary"):
+                identifiants_existants = {k.strip().lower() for k in users.keys()}
                 if not u_login or not u_pass or not u_nom.strip():
                     st.error("Identifiant, mot de passe et nom sont obligatoires.")
-                elif u_login in users:
-                    st.error("Cet identifiant existe déjà.")
+                elif " " in u_login:
+                    st.error("L'identifiant ne peut pas contenir d'espaces.")
+                elif u_login in identifiants_existants:
+                    st.error("Désolé, cet identifiant est déjà attribué à un autre compte.")
                 elif u_role != "super_admin" and not u_club:
                     st.error("Un compte manager ou staff doit être rattaché à un club.")
                 else:

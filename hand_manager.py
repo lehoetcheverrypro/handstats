@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_ROOT = os.environ.get("HANDSTAT_DATA_DIR", os.path.join(BASE_DIR, "data"))
@@ -17,6 +18,23 @@ def get_dossier_club(club_slug: str | None) -> str:
     dossier = os.path.join(DATA_ROOT, "clubs", normaliser_slug_club(club_slug))
     os.makedirs(dossier, exist_ok=True)
     return dossier
+
+
+def supprimer_dossier_club(club_slug: str | None) -> bool:
+    """Supprime définitivement le dossier de données d'un club si existant."""
+    if not club_slug:
+        return False
+    slug_propre = normaliser_slug_club(club_slug)
+    racine_clubs = os.path.abspath(os.path.join(DATA_ROOT, "clubs"))
+    cible = os.path.abspath(os.path.join(racine_clubs, slug_propre))
+
+    # Sécurité : s'assurer que la cible reste strictement à l'intérieur de DATA_ROOT/clubs
+    if os.path.commonpath([racine_clubs, cible]) != racine_clubs or cible == racine_clubs:
+        return False
+
+    if os.path.exists(cible):
+        shutil.rmtree(cible)
+    return True
 
 
 def get_nom_fichier_equipe(nom_equipe: str) -> str:

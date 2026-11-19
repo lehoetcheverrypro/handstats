@@ -9,7 +9,7 @@ from hand_manager import (
     get_dossier_club,
     get_nom_fichier_equipe,
 )
-from pdf_club import generer_pdf_bilan_global
+from rapport_club_pdf import generer_pdf_bilan_global
 
 
 def _get_club_slug_courant() -> str:
@@ -249,7 +249,7 @@ def afficher_espace_manager():
             st.subheader("➕ Nouveau compte Staff / Entraîneur")
             col1, col2 = st.columns(2)
             with col1:
-                new_username = st.text_input("Identifiant de connexion (ex: thomas_seniors)").strip()
+                new_username = st.text_input("Identifiant de connexion (ex: thomas_seniors)").strip().lower()
                 new_password = st.text_input("Mot de passe", type="password")
             with col2:
                 new_nom = st.text_input("Nom / Prénom du coach")
@@ -258,7 +258,14 @@ def afficher_espace_manager():
 
             submit_staff = st.form_submit_button("Créer l'accès staff")
             if submit_staff:
-                if new_username and new_password and new_nom.strip() and new_username not in users_dict:
+                identifiants_existants = {k.strip().lower() for k in users_dict.keys()}
+                if not new_username or not new_password or not new_nom.strip():
+                    st.error("Veuillez remplir l'identifiant, le mot de passe et le nom du coach.")
+                elif " " in new_username:
+                    st.error("L'identifiant ne peut pas contenir d'espaces.")
+                elif new_username in identifiants_existants:
+                    st.error("Désolé, cet identifiant est déjà attribué à un autre compte.")
+                else:
                     users_dict[new_username] = {
                         "password": new_password,
                         "role": "staff",
@@ -271,8 +278,6 @@ def afficher_espace_manager():
                         f"Compte staff créé pour **{new_nom}** assigné aux équipes : **{', '.join(new_equipes)}** !"
                     )
                     st.rerun()
-                else:
-                    st.error("Champs invalides, vides ou identifiant déjà pris dans la plateforme.")
 
     # --- ONGLET 4 : CONFIGURATION DU CLUB & LOGO ---
     with tab_club_config:
