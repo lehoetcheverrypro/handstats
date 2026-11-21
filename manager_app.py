@@ -6,6 +6,7 @@ import io
 from auth_manager import (
     LIBELLES_PERMISSIONS,
     PERMISSIONS_DEFAUT_PAR_ROLE,
+    afficher_bloc_changement_mot_de_passe,
     afficher_en_tete_avec_profil,
     hasher_mot_de_passe,
     obtenir_permissions_utilisateur,
@@ -18,6 +19,7 @@ from hand_manager import (
     resumer_charge_forme_joueur,
 )
 from rapport_club_pdf import generer_pdf_bilan_global
+from theme import barre_laterale
 
 
 def _get_club_slug_courant() -> str:
@@ -80,23 +82,38 @@ def afficher_espace_manager():
     elif "club_equipes" not in st.session_state:
         st.session_state.club_equipes = ["Séniors M", "Séniors F", "-18M", "-15F"]
 
+    nav_manager_key = f"page_manager_{club_slug}"
+    if nav_manager_key not in st.session_state:
+        st.session_state[nav_manager_key] = "bilan"
+
+    page_manager = barre_laterale(
+        pages=[
+            ("bilan", "Tableau de bord & bilan"),
+            ("equipes", "Gestion des équipes"),
+            ("staffs", "Gestion des staffs"),
+            ("club", "Configuration & logo"),
+            ("parametres", "Paramètres"),
+        ],
+        page_active=st.session_state[nav_manager_key],
+        equipe="Direction du club",
+        club=club_actuel,
+    )
+    if page_manager and page_manager != st.session_state[nav_manager_key]:
+        st.session_state[nav_manager_key] = page_manager
+        st.rerun()
+
+    page_active_mgr = st.session_state[nav_manager_key]
+
     # En-tête combiné Titre + Profil
-    afficher_en_tete_avec_profil(f"👔 Espace Club Manager — {club_actuel}")
+    afficher_en_tete_avec_profil("Espace direction", sous_titre=club_actuel)
 
     st.info(
         f"Bienvenue dans le panneau de direction de **{club_actuel}**. "
         "Suivez en un coup d'œil les performances globales de toutes vos équipes et gérez les accès."
     )
 
-    tab_stats_globales, tab_equipes, tab_staffs, tab_club_config = st.tabs([
-        "📊 Tableau de Bord & Bilan",
-        "🛡️ Gestion des Équipes",
-        "👥 Gestion des Staffs",
-        "⚙️ Configuration & Logo",
-    ])
-
     # --- ONGLET 1 : TABLEAU DE BORD & BILAN GLOBAL ---
-    with tab_stats_globales:
+    if page_active_mgr == "bilan":
         st.subheader("🎯 Vue d'ensemble du Club — Performances par Équipe")
         st.write("Indicateurs clés consolidés pour un suivi présidentiel et directionnel rapide.")
 
@@ -115,9 +132,9 @@ def afficher_espace_manager():
 
             synthese_data.append({
                 "Équipe": eq,
-                "Matchs Joués": stats["matchs"],
+                "Matchs": stats["matchs"],
                 "Victoires": stats["victoires"],
-                "% Victoires": f"{pct_victoires}%",
+                "% Victoire": f"{pct_victoires}%",
                 "Moy. Buts / Match": stats["moy_buts"],
             })
 
@@ -133,7 +150,7 @@ def afficher_espace_manager():
 
         # Bouton d'export PDF du Bilan Global du Club
         pdf_bilan_bytes = generer_pdf_bilan_global(
-            club_actuel, synthese_data, total_matchs_club, total_victoires_club, pct_global_vic
+            club_actuel, synthese_data, total_matchs_club, total_victoires_club, pct_global_vic, dossier_club=dossier_club
         )
         st.download_button(
             label="📥 Télécharger le Bilan Global du Club (PDF Institutionnel)",
@@ -205,7 +222,7 @@ def afficher_espace_manager():
             st.caption("📌 Aucune donnée longitudinale de charge ou de forme enregistrée sur les équipes du club pour le moment.")
 
     # --- ONGLET 2 : GESTION DES ÉQUIPES (AJOUT & SUPPRESSION) ---
-    with tab_equipes:
+    elif page_active_mgr == "equipes":
         st.subheader("🛡️ Gestion des Équipes du Club")
 
         if st.session_state.get("club_equipes"):
@@ -251,7 +268,7 @@ def afficher_espace_manager():
                     st.error("Nom d'équipe invalide ou déjà existant.")
 
     # --- ONGLET 3 : GESTION DES STAFFS & PERMISSIONS (ENCLOISONNÉ AU CLUB) ---
-    with tab_staffs:
+    elif page_active_mgr == "staffs":
         st.subheader("👥 Gestion des profils Staff, Analystes & Permissions")
 
         users_dict = reg.get("users", st.session_state.users_db)
@@ -373,7 +390,7 @@ def afficher_espace_manager():
                     st.rerun()
 
     # --- ONGLET 4 : CONFIGURATION DU CLUB & LOGO ---
-    with tab_club_config:
+    elif page_active_mgr == "club":
         st.subheader("⚙️ Identité Visuelle & Logo du Club")
         st.write("Téléchargez le logo officiel de votre club pour l'intégrer sur les rapports PDF.")
 
@@ -409,3 +426,8 @@ def afficher_espace_manager():
                 mime="application/zip",
                 type="primary",
             )
+
+    # --- VUE 5 : PARAMÈTRES GÉNÉRAUX ---
+    elif page_active_mgr == "parametres":
+        st.subheader("⚙️ Paramètres du Compte & Sécurité")
+        afficher_bloc_changement_mot_de_passe(key_suffix="manager")

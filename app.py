@@ -1,4 +1,5 @@
 import streamlit as st
+from theme import injecter_theme
 from auth_manager import (
     _session_vide,
     afficher_espace_super_admin,
@@ -12,13 +13,15 @@ st.set_page_config(
     page_title="HandStats Pro — Portail Central",
     page_icon="🤾‍♀️",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
+injecter_theme()
 init_users_db()
 session = st.session_state.user_session
 
 if not session["logged_in"]:
-    col1, col2, col3 = st.columns([1, 1.5, 1])
+    col1, col2, col3 = st.columns([1, 1.25, 1])
     with col2:
         ecran_connexion()
 else:

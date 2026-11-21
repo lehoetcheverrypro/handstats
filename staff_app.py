@@ -24,6 +24,16 @@ from shot_grid import (
     afficher_cage_recapitulative,
     afficher_selecteur_zone_terrain,
 )
+from scouting_adversaire import afficher_onglet_scouting_adversaire
+from saisie_rapide_tablette import afficher_cockpit_tablette_plein_ecran
+from theme import hero_match, tuile_navigation, barre_laterale, masquer_barre_laterale
+from accueil_dashboard import calculer_resume_saison, afficher_tableau_de_bord
+from parametres_app import (
+    afficher_page_parametres,
+    charger_parametres,
+    libelle_avec_raccourci,
+)
+
 
 def run_staff_app(equipe_assignee):
     # --- CONTRÔLE D'ENCLOISONNEMENT PAR CLUB ---
@@ -85,9 +95,10 @@ def run_staff_app(equipe_assignee):
     }[genre_equipe]
 
     sync_mgr = OfflineSyncManager(dossier_club=dossier_club_session, club_slug=club_slug_session)
+    cfg_app = charger_parametres()
+
     # En-tête combiné Titre + Profil
-    afficher_en_tete_avec_profil(f"🎽 Espace Staff — {equipe_assignee} ({club_nom_session})")
-    st.info(f"Vous pilotez actuellement les données pour l'équipe **{equipe_assignee}** ({club_nom_session}).")
+    afficher_en_tete_avec_profil(equipe_assignee, sous_titre=club_nom_session)
 
     ZONES_TERRAIN_LISTE = [
         "Aile Gauche",
@@ -102,12 +113,13 @@ def run_staff_app(equipe_assignee):
     st.markdown("""
         <style>
         .block-container {
-            padding-top: 2.8rem;
-            padding-bottom: 2rem;
+            padding-top: 2.2rem;
+            padding-bottom: 2.2rem;
         }
         .top-box {
-            background-color: #f8fafc;
-            border: 1px solid #cbd5e1;
+            background-color: #121620;
+            border: 1px solid #273043;
+            color: #FFFFFF;
             padding: 10px 15px;
             border-radius: 12px;
             text-align: center;
@@ -118,13 +130,13 @@ def run_staff_app(equipe_assignee):
             box-sizing: border-box;
         }
         .top-box-dark {
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            background-color: #121620;
             padding: 10px 15px;
             border-radius: 12px;
             text-align: center;
-            color: white;
-            border: 1px solid #334155;
-            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            color: #FFFFFF;
+            border: 1px solid #273043;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.25);
             height: 74px;
             display: flex;
             flex-direction: column;
@@ -132,9 +144,9 @@ def run_staff_app(equipe_assignee):
             box-sizing: border-box;
         }
         .stButton>button {
-            border-radius: 6px;
+            border-radius: 8px;
             font-weight: 600;
-            padding: 4px 8px;
+            padding: 6px 10px;
             font-size: 13px;
             transition: all 0.2s ease;
             width: 100%;
@@ -179,14 +191,14 @@ def run_staff_app(equipe_assignee):
 
     def get_badge_poste_html(poste):
         if "Arrière" in poste or "Demi-centre" in poste:
-            return '<span style="background-color: #dbeafe; color: #1e40af; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">🔵 Base Arrière</span>'
+            return '<span style="background-color: #1A2030; color: #93C5FD; border: 1px solid #273043; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">🔵 Base Arrière</span>'
         elif "Ailière" in poste or "Ailier" in poste:
-            return f'<span style="background-color: #d1fae5; color: #065f46; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">{L["badge_ailier"]}</span>'
+            return f'<span style="background-color: #1A2030; color: #86EFAC; border: 1px solid #273043; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">{L["badge_ailier"]}</span>'
         elif "Pivot" in poste:
-            return '<span style="background-color: #fef3c7; color: #92400e; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">🟠 Pivot</span>'
+            return '<span style="background-color: #1A2030; color: #FCD34D; border: 1px solid #273043; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">🟠 Pivot</span>'
         elif "Gardienne" in poste or "Gardien" in poste:
-            return f'<span style="background-color: #f3e8ff; color: #6b21a8; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">{L["badge_gardien"]}</span>'
-        return f'<span style="background-color: #f3f4f6; color: #374151; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">{poste}</span>'
+            return f'<span style="background-color: #1A2030; color: #D8B4FE; border: 1px solid #273043; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">{L["badge_gardien"]}</span>'
+        return f'<span style="background-color: #1A2030; color: #FFFFFF; border: 1px solid #273043; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;">{poste}</span>'
 
     def get_prefix_couleur(poste):
         if "Arrière" in poste or "Demi-centre" in poste:
@@ -378,7 +390,7 @@ def run_staff_app(equipe_assignee):
             return
 
         with st.container(border=True):
-            st.markdown("#### 🔄 État Hors Ligne & File de Synchronisation")
+            st.markdown("#### État hors ligne et synchronisation")
             c_s1, c_s2 = st.columns([3, 1.5])
             with c_s1:
                 if brouillon_actif:
@@ -394,7 +406,7 @@ def run_staff_app(equipe_assignee):
             with c_s2:
                 if en_attente:
                     if st.button(
-                        "🔄 Synchroniser la file",
+                        "Synchroniser la file",
                         type="primary",
                         use_container_width=True,
                         key=f"btn_sync_queue_{ctx_prefix}",
@@ -406,79 +418,99 @@ def run_staff_app(equipe_assignee):
                         )
                         st.rerun()
                 if st.button(
-                    "🧹 Nettoyer l'historique synchro",
+                    "Nettoyer l'historique synchro",
                     use_container_width=True,
                     key=f"btn_purge_sync_{ctx_prefix}",
                 ):
                     nb_purges = sync_mgr.purger_synchronises()
                     st.toast(f"{nb_purges} opération(s) synchronisée(s) nettoyée(s).", icon="🧹")
                     st.rerun()
-    # ==========================================
-    # 1. ÉCRAN D'ACCUEIL
-    # ==========================================
+
+    # --- NAVIGATION LATÉRALE (masquée en mode match plein écran) ---
+    _page_courante = st.session_state[page_key]
+    if _page_courante == "match":
+        masquer_barre_laterale()
+    else:
+        _choix_nav = barre_laterale(
+            pages=[
+                ("accueil", "Tableau de bord"),
+                ("saison", "Analyse et saison"),
+                ("effectif", L["effectif"]),
+                ("parametres", "Paramètres"),
+            ],
+            page_active=_page_courante,
+            equipe=equipe_assignee,
+            club=club_nom_session,
+            desactives=(),
+            match_en_cours=bool(st.session_state.get(f"match_en_cours_{ctx_prefix}", False)),
+        )
+        if _choix_nav and _choix_nav != _page_courante:
+            aller_a(_choix_nav)
+
     if st.session_state[page_key] == "accueil":
-        st.title("🤾‍♀️ HandStats Pro")
-        st.markdown(f"### L'outil de performance et de suivi tactique de terrain pour **{equipe_assignee}**.")
+        match_en_cours = bool(st.session_state.get(f"match_en_cours_{ctx_prefix}", False))
+        tm_acc = st.session_state.get(f"temps_morts_match_{ctx_prefix}", {"equipe": 0, "adversaire": 0})
 
-        match_encours_key = f"match_en_cours_{ctx_prefix}"
-        nom_m_key = f"nom_match_actuel_{ctx_prefix}"
+        if hero_match(
+            cle=ctx_prefix,
+            equipe=equipe_assignee,
+            peut_saisir=a_permission("saisie_match"),
+            en_cours=match_en_cours,
+            nom_match=st.session_state.get(f"nom_match_actuel_{ctx_prefix}", "Match"),
+            tm_equipe=int(tm_acc.get("equipe", 0)),
+            tm_adversaire=int(tm_acc.get("adversaire", 0)),
+        ):
+            aller_a("match")
 
-        if st.session_state.get(match_encours_key, False):
-            nom_m = st.session_state.get(nom_m_key, "Match")
-            st.markdown("---")
-            with st.container(border=True):
-                st.markdown(f"### ⚡ Match en cours détecté pour {equipe_assignee} : **{nom_m}**")
-                st.write("Le match précédent n'a pas été archivé. Vos données et votre chrono sont en sécurité.")
-                tm_acc = st.session_state.get(f"temps_morts_match_{ctx_prefix}", {"equipe": 0, "adversaire": 0})
-                st.caption(
-                    f"Temps morts utilisés — **{equipe_assignee}** : `{int(tm_acc.get('equipe', 0))}/3` • "
-                    f"**Adversaire** : `{int(tm_acc.get('adversaire', 0))}/3`"
-                )
-                if st.button("▶️ Reprendre le match en cours", type="primary", use_container_width=True, key=f"btn_reprendre_{ctx_prefix}"):
-                    aller_a("match")
-            st.markdown("---")
-        else:
-            st.divider()
+        afficher_tableau_de_bord(calculer_resume_saison(manager), feminin=(genre_equipe == "F"))
+
+        col_saison, col_effectif = st.columns(2, gap="medium")
+        with col_saison:
+            if tuile_navigation(
+                cle=f"saison_{ctx_prefix}",
+                icone="stats",
+                titre="Analyse et saison",
+                texte="Historique des rencontres, bilans d'équipe, tendances, charge de jeu et scouting adverse.",
+                label_bouton="Ouvrir l'analyse",
+            ):
+                aller_a("saison")
+        with col_effectif:
+            if tuile_navigation(
+                cle=f"effectif_{ctx_prefix}",
+                icone="effectif",
+                titre=L["effectif"],
+                texte=f"Gestion des {L['joueurs']}, numéros, postes et profils.",
+                label_bouton="Gérer l'effectif",
+            ):
+                aller_a("effectif")
+
+        st.write("")
         afficher_bloc_synchro_hors_ligne()
 
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            with st.container(border=True):
-                st.markdown("#### ⚡ Saisie & Match")
-                st.write("Feuille de match en direct, tirs, duels, pertes de balle et discipline.")
-                peut_saisir_match = a_permission("saisie_match")
-                if st.button(
-                    "Lancer / Match en direct",
-                    type="primary",
-                    use_container_width=True,
-                    disabled=not peut_saisir_match,
-                    key=f"btn_nav_match_{ctx_prefix}",
-                ):
-                    aller_a("match")
-                if not peut_saisir_match:
-                    st.caption("🔒 Saisie de match désactivée pour votre profil.")
-
-        with col2:
-            with st.container(border=True):
-                st.markdown("#### 📈 Analyse & Saison")
-                st.write("Historique des rencontres, bilans d'équipe, tendances et stats.")
-                if st.button("Stats Saison", use_container_width=True, key=f"btn_nav_saison_{ctx_prefix}"):
-                    aller_a("saison")
-
-        with col3:
-            with st.container(border=True):
-                st.markdown(f"#### 👥 {L['effectif']}")
-                st.write(f"Gestion des {L['joueurs']}, numéros, postes et profils.")
-                if st.button("Gérer l'effectif", use_container_width=True, key=f"btn_nav_effectif_{ctx_prefix}"):
-                    aller_a("effectif")
+    # ==========================================
+    # 1B. PAGE : PARAMÈTRES DE L'APPLICATION
+    # ==========================================
+    elif st.session_state[page_key] == "parametres":
+        afficher_page_parametres(on_retour=lambda: aller_a("accueil"))
 
     # ==========================================
     # 2. ÉCRAN : MATCH EN DIRECT
     # ==========================================
     elif st.session_state[page_key] == "match":
-        if st.button("⬅️ Retour à l'accueil", key=f"btn_retour_accueil_{ctx_prefix}"):
-            aller_a("accueil")
+        col_retour_m, col_tab_m = st.columns([1.5, 1.5])
+        with col_retour_m:
+            if st.button("⬅️ Retour à l'accueil", key=f"btn_retour_accueil_{ctx_prefix}"):
+                aller_a("accueil")
+        with col_tab_m:
+            if st.session_state.get(f"match_en_cours_{ctx_prefix}", False):
+                if st.button(
+                    "📱 Mode Saisie Rapide Tablette",
+                    type="primary",
+                    use_container_width=True,
+                    key=f"btn_enter_tab_{ctx_prefix}",
+                ):
+                    st.session_state[f"mode_tablette_plein_ecran_{ctx_prefix}"] = True
+                    st.rerun()
 
         st.header(f"⚡ Cockpit de Match en Direct — {equipe_assignee}")
 
@@ -631,6 +663,9 @@ def run_staff_app(equipe_assignee):
                 banc_key = f"banc_joueuses_{ctx_prefix}"
                 zones_key = f"zones_tirs_match_{ctx_prefix}"
                 popup_key = f"pop_up_active_{ctx_prefix}"
+                mode_tablette_key = f"mode_tablette_plein_ecran_{ctx_prefix}"
+                if mode_tablette_key not in st.session_state:
+                    st.session_state[mode_tablette_key] = False
                 chrono_enc_key = f"chrono_en_cours_{ctx_prefix}"
                 chrono_secs_key = f"chrono_secondes_cumulees_{ctx_prefix}"
                 chrono_deb_key = f"chrono_debut_{ctx_prefix}"
@@ -658,6 +693,7 @@ def run_staff_app(equipe_assignee):
                     zone_cage=None,
                     membre_nom=None,
                     systeme_adv=None,
+                    temps_mort_camp=None,
                 ):
                     if journal_key not in st.session_state:
                         st.session_state[journal_key] = []
@@ -693,6 +729,8 @@ def run_staff_app(equipe_assignee):
                         entry["membre_nom"] = membre_nom
                     if systeme_adv:
                         entry["systeme_adv"] = systeme_adv
+                    if temps_mort_camp:
+                        entry["temps_mort_camp"] = temps_mort_camp
 
                     st.session_state[journal_key].append(entry)
                     sauvegarder_brouillon_match_local()
@@ -734,7 +772,7 @@ def run_staff_app(equipe_assignee):
                     })
                     sauvegarder_brouillon_match_local()
                     st.toast("Passage en 2ème mi-temps : chrono calé à 30:00.", icon="⏱️")
-                    
+
                 def annuler_derniere_action():
                     actions_liste = st.session_state.get(journal_key, [])
                     if not actions_liste:
@@ -744,7 +782,6 @@ def run_staff_app(equipe_assignee):
                     derniere = actions_liste.pop()
                     t_act = derniere.get("type_action", "")
                     nom_m = derniere.get("membre_nom")
-                    z_ter = derniere.get("zone_terrain")
                     z_cage = derniere.get("zone_cage")
                     sys_adv = derniere.get("systeme_adv")
 
@@ -1012,28 +1049,85 @@ def run_staff_app(equipe_assignee):
                 total_buts_encaisses = sum(get_membre(n).buts_encaisses for n in joueuses_actives if get_membre(n) and isinstance(get_membre(n), Gardienne))
                 temps_actuel_str = formater_temps(secondes_totales)
 
+                if st.session_state[mode_tablette_key]:
+                    st.session_state[terrain_key] = [j for j in st.session_state.get(terrain_key, []) if get_membre(j)]
+                    st.session_state[banc_key] = [j for j in st.session_state.get(banc_key, []) if get_membre(j)]
+                    tous_membres_dispos = list(manager.joueuses.keys()) + list(st.session_state.get(pretes_key, {}).keys())
+                    if not st.session_state[terrain_key] and tous_membres_dispos:
+                        st.session_state[terrain_key] = tous_membres_dispos[:7]
+                        st.session_state[banc_key] = tous_membres_dispos[7:]
+                    if not st.session_state.get(focus_key) or not get_membre(st.session_state[focus_key]):
+                        st.session_state[focus_key] = st.session_state[terrain_key][0] if st.session_state[terrain_key] else None
+
+                    def _start_chrono_tab():
+                        if not st.session_state.get(chrono_enc_key, False):
+                            st.session_state[chrono_enc_key] = True
+                            st.session_state[chrono_deb_key] = time.time()
+
+                    def _pause_chrono_tab():
+                        if st.session_state.get(chrono_enc_key, False):
+                            st.session_state[chrono_secs_key] += int(time.time() - st.session_state[chrono_deb_key])
+                            st.session_state[chrono_enc_key] = False
+
+                    def _ouvrir_popup_tir_tab(nom_j, type_t):
+                        st.session_state[popup_key] = (nom_j, type_t)
+                        st.session_state[f"etape_saisie_tir_{ctx_prefix}"] = "terrain"
+                        st.session_state[f"temp_zone_terrain_{ctx_prefix}"] = None
+
+                    def _quitter_mode_tab():
+                        st.session_state[mode_tablette_key] = False
+
+                    afficher_cockpit_tablette_plein_ecran(
+                        ctx_prefix=ctx_prefix,
+                        equipe_assignee=equipe_assignee,
+                        nom_match_actuel=nom_match_actuel,
+                        L=L,
+                        joueuses_actives=joueuses_actives,
+                        terrain_list=st.session_state[terrain_key],
+                        banc_list=st.session_state[banc_key],
+                        get_membre=get_membre,
+                        get_numero_actif=get_numero_actif,
+                        manager=manager,
+                        total_buts_marques=total_buts_marques,
+                        total_buts_encaisses=total_buts_encaisses,
+                        temps_actuel_str=temps_actuel_str,
+                        periode_actuelle=st.session_state.get(f"periode_match_{ctx_prefix}", "1ère MT"),
+                        chrono_en_cours=st.session_state.get(chrono_enc_key, False),
+                        enregistrer_action=enregistrer_action,
+                        annuler_derniere_action=annuler_derniere_action,
+                        appliquer_exclusion_2min=appliquer_exclusion_2min,
+                        appliquer_carton_rouge_direct=appliquer_carton_rouge_direct,
+                        enregistrer_temps_mort=enregistrer_temps_mort,
+                        basculer_seconde_mi_temps=basculer_seconde_mi_temps,
+                        on_start_chrono=_start_chrono_tab,
+                        on_pause_chrono=_pause_chrono_tab,
+                        on_ouvrir_popup_tir=_ouvrir_popup_tir_tab,
+                        on_quitter_mode_tablette=_quitter_mode_tab,
+                    )
+                    return
+
                 c_top_info, c_top_score_chrono, c_top_controls = st.columns([1.2, 2.6, 1.2])
 
                 with c_top_info:
                     st.markdown(f"""
-                        <div class="top-box">
-                            <div style="font-size: 10px; color: #64748b; font-weight: bold; text-transform: uppercase;">Rencontre</div>
-                            <div style="font-size: 14px; font-weight: 700; color: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{nom_match_actuel}</div>
+                        <div class="top-box" style="background-color: #121620; border: 1px solid #273043; border-radius: 12px; padding: 10px 14px;">
+                            <div style="font-size: 10px; color: #CBD5E1; font-weight: bold; text-transform: uppercase;">Rencontre</div>
+                            <div style="font-size: 14px; font-weight: 700; color: #FFFFFF; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{nom_match_actuel}</div>
                         </div>
                     """, unsafe_allow_html=True)
 
                 with c_top_score_chrono:
                     st.markdown(f"""
-                        <div class="top-box-dark">
+                        <div class="top-box-dark" style="background-color: #121620; border: 1px solid #273043; border-radius: 12px; padding: 10px 15px;">
                             <div style="display: flex; justify-content: space-around; align-items: center;">
                                 <div>
-                                    <div style="font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: #94a3b8; font-weight: 600;">Score</div>
-                                    <div style="font-size: 22px; font-weight: 800; color: #f8fafc; line-height: 1.1;">{total_buts_marques}  —  {total_buts_encaisses}</div>
+                                    <div style="font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: #CBD5E1; font-weight: 600;">Score</div>
+                                    <div style="font-size: 22px; font-weight: 800; color: #FFFFFF; line-height: 1.1;">{total_buts_marques}  —  {total_buts_encaisses}</div>
                                 </div>
-                                <div style="border-left: 1px solid #334155; height: 28px; margin: 0 10px;"></div>
+                                <div style="border-left: 1px solid #273043; height: 28px; margin: 0 10px;"></div>
                                 <div>
-                                    <div style="font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: #94a3b8; font-weight: 600;">Chrono</div>
-                                    <div style="font-size: 22px; font-weight: 800; color: #38bdf8; line-height: 1.1; font-family: monospace;">{temps_actuel_str}</div>
+                                    <div style="font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: #CBD5E1; font-weight: 600;">Chrono</div>
+                                    <div style="font-size: 22px; font-weight: 800; color: #38BDF8; line-height: 1.1; font-family: monospace;">{temps_actuel_str}</div>
                                 </div>
                             </div>
                         </div>
@@ -1041,7 +1135,7 @@ def run_staff_app(equipe_assignee):
 
                 with c_top_controls:
                     with st.container(border=True):
-                        st.markdown("<div style='font-size: 9px; font-weight: bold; text-transform: uppercase; color: #64748b; text-align: center; margin-bottom: 2px;'>Contrôle Temps</div>", unsafe_allow_html=True)
+                        st.markdown("<div style='font-size: 9px; font-weight: bold; text-transform: uppercase; color: #CBD5E1; text-align: center; margin-bottom: 2px;'>Contrôle Temps</div>", unsafe_allow_html=True)
                         cc1, cc2, cc3 = st.columns(3)
                         with cc1:
                             start_btn = st.button("▶️", key=f"chrono_start_{ctx_prefix}", use_container_width=True)
@@ -1190,10 +1284,9 @@ def run_staff_app(equipe_assignee):
                             st.markdown(get_badge_poste_html(p_obj.poste), unsafe_allow_html=True)
                         with h_col3:
                             if isinstance(p_obj, JoueuseDeChamp):
-                                st.markdown(f"<div style='font-size: 15px; font-weight: 800; color: #ffffff; background-color: #1e293b; padding: 6px 10px; border-radius: 6px; text-align: center;'>🎯 {p_obj.buts}/{p_obj.tirs} buts <span style='font-size: 11px; color: #94a3b8;'>({p_obj.efficacite_tirs()}%)</span> | Passes D. : {p_obj.passes_decisives}</div>", unsafe_allow_html=True)
+                                st.markdown(f"<div style='font-size: 15px; font-weight: 800; color: #FFFFFF; background-color: #1A2030; border: 1px solid #273043; padding: 6px 10px; border-radius: 6px; text-align: center;'>🎯 {p_obj.buts}/{p_obj.tirs} buts <span style='font-size: 11px; color: #CBD5E1;'>({p_obj.efficacite_tirs()}%)</span> | Passes D. : {p_obj.passes_decisives}</div>", unsafe_allow_html=True)
                             elif isinstance(p_obj, Gardienne):
-                                st.markdown(f"<div style='font-size: 15px; font-weight: 800; color: #ffffff; background-color: #1e293b; padding: 6px 10px; border-radius: 6px; text-align: center;'>🧤 {p_obj.arrets}/{p_obj.tirs_subis} arrêts <span style='font-size: 11px; color: #94a3b8;'>({p_obj.pourcentage_arrets()}%)</span></div>", unsafe_allow_html=True)
-
+                                st.markdown(f"<div style='font-size: 15px; font-weight: 800; color: #FFFFFF; background-color: #1A2030; border: 1px solid #273043; padding: 6px 10px; border-radius: 6px; text-align: center;'>🧤 {p_obj.arrets}/{p_obj.tirs_subis} arrêts <span style='font-size: 11px; color: #CBD5E1;'>({p_obj.pourcentage_arrets()}%)</span></div>", unsafe_allow_html=True)
                         st.markdown("---")
 
                         if isinstance(p_obj, JoueuseDeChamp):
@@ -1415,7 +1508,7 @@ def run_staff_app(equipe_assignee):
                                 "texte": txt_com_bot.strip(),
                             })
                             sauvegarder_brouillon_match_local()
-                            st.success("Note enregistrée !")
+                            st.rerun()
 
                 st.divider()
 
@@ -1477,7 +1570,7 @@ def run_staff_app(equipe_assignee):
                     if commentaires_key in st.session_state and st.session_state[commentaires_key]:
                         st.markdown("**💬 Journal des faits de match enregistrés :**")
                         for note in st.session_state[commentaires_key]:
-                            st.markdown(f"- **`{note['temps']}`** : {note['texte']}")
+                            st.markdown(f"- **`{note['temps']}`** (`{note.get('periode', '')}`) : {note['texte']}")
 
                 st.divider()
 
@@ -1691,6 +1784,7 @@ def run_staff_app(equipe_assignee):
                             st.session_state[att_adv_key] = {"Yago": 0, "Yego": 0, "Montpellier": 0, "Croisé": 0, "Autre": 0}
                             st.session_state[zones_key] = {}
                             st.session_state[popup_key] = None
+                            st.session_state[mode_tablette_key] = False
                             st.session_state[pretes_key] = {}
                             if f"numeros_match_{ctx_prefix}" in st.session_state:
                                 del st.session_state[f"numeros_match_{ctx_prefix}"]
@@ -1741,7 +1835,6 @@ def run_staff_app(equipe_assignee):
                         pretes_dict = st.session_state.get(pretes_key, {})
                         dict_nums_match = st.session_state.get(f"numeros_match_{ctx_prefix}", {})
 
-                        # Capture des stats individuelles avant remise à zéro par archiver_match()
                         indices_perf_avant_archive = {}
                         for n_act in joueuses_actives:
                             m_obj = get_membre(n_act)
@@ -1790,7 +1883,6 @@ def run_staff_app(equipe_assignee):
                             club_equipes=_get_equipes_du_club_courant(),
                         )
 
-                        # Enregistrement longitudinal de match pour les joueurs de l'effectif principal
                         if df_cloture_edit is not None and not df_cloture_edit.empty:
                             for _, row_c in df_cloture_edit.iterrows():
                                 nom_c = row_c.get("Nom")
@@ -1812,6 +1904,7 @@ def run_staff_app(equipe_assignee):
                         st.session_state[att_adv_key] = {"Yago": 0, "Yego": 0, "Montpellier": 0, "Croisé": 0, "Autre": 0}
                         st.session_state[zones_key] = {}
                         st.session_state[popup_key] = None
+                        st.session_state[mode_tablette_key] = False
                         st.session_state[pretes_key] = {}
                         st.session_state[temps_jeu_key] = {}
                         st.session_state[temps_morts_key] = {"equipe": 0, "adversaire": 0}
@@ -1838,11 +1931,12 @@ def run_staff_app(equipe_assignee):
                     if m["match"] not in matchs_archives:
                         matchs_archives.append(m["match"])
 
-            sub_tab_matchs, sub_tab_equipe, sub_tab_joueuses, sub_tab_charge = st.tabs([
+            sub_tab_matchs, sub_tab_equipe, sub_tab_joueuses, sub_tab_charge, sub_tab_scouting = st.tabs([
                 "📋 Feuilles de Match Archivées",
                 "👥 Statistiques Équipe",
                 f"👤 Statistiques par {L['joueur'].capitalize()}",
                 "🔋 Charge & Forme",
+                "🔎 Scouting Adversaire",
             ])
 
             # --- SOUS-ONGLET 1 : FEUILLES DE MATCH ARCHIVÉES ---
@@ -2061,9 +2155,9 @@ def run_staff_app(equipe_assignee):
                                             continue
 
                                         if not is_gardienne:
-                                            if act_type == "But":
+                                            if act_type in ("But",) or act_type.startswith("But ("):
                                                 cible[z_cage_ext]["succes"] += 1
-                                            elif act_type == "Tir raté":
+                                            elif act_type in ("Tir raté",) or act_type.startswith("Tir raté ("):
                                                 cible[z_cage_ext]["echec"] += 1
                                         else:
                                             if act_type == "Arrêt décisif":
@@ -2104,7 +2198,6 @@ def run_staff_app(equipe_assignee):
                                 st.rerun()
 
                         st.divider()
-                        
                         st.markdown("### 📥 Téléchargements des Rapports")
 
                         if not a_permission("exports"):
@@ -2179,7 +2272,7 @@ def run_staff_app(equipe_assignee):
                                     mime="application/json",
                                     key=f"dl_json_match_{ctx_prefix}_{match_choisi}",
                                 )
-                           
+
             # --- SOUS-ONGLET 2 : STATISTIQUES ÉQUIPE ---
             with sub_tab_equipe:
                 st.subheader("👥 Bilan Global & Indicateurs Clés de la Saison")
@@ -2418,7 +2511,6 @@ def run_staff_app(equipe_assignee):
 
                             suivi_j_list = list(getattr(p, "suivi_longitudinal", []) or [])
                             if not suivi_j_list and p.historique_matchs:
-                                # Alimentation visuelle automatique depuis l'historique match si aucune entrée saisie manuellement
                                 for idx_m, m_hist in enumerate(p.historique_matchs, start=1):
                                     suivi_j_list.append({
                                         "date": f"Match {idx_m}",
@@ -2719,6 +2811,23 @@ def run_staff_app(equipe_assignee):
                                     nb_enregistres += 1
                         st.success(f"Suivi enregistré pour {nb_enregistres} {L['joueur']}(s).")
                         st.rerun()
+
+            # --- SOUS-ONGLET 5 : RAPPORT DE SCOUTING ---
+            with sub_tab_scouting:
+                joueuses_par_eq_scout = {equipe_assignee: manager.joueuses}
+                for eq_autre in _get_equipes_du_club_courant():
+                    if eq_autre != equipe_assignee:
+                        mgr_autre = EquipeManager(fichier=get_nom_fichier_equipe(eq_autre), club_slug=club_slug_session)
+                        joueuses_par_eq_scout[eq_autre] = mgr_autre.joueuses
+
+                afficher_onglet_scouting_adversaire(
+                    joueuses_par_equipe=joueuses_par_eq_scout,
+                    club_nom=club_nom_session,
+                    equipe_nom=equipe_assignee,
+                    ctx_prefix=ctx_prefix,
+                    dossier_club=dossier_club_session,
+                    peut_exporter=a_permission("exports"),
+                )
 
     # ==========================================
     # 4. ÉCRAN : GESTION DE L'EFFECTIF

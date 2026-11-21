@@ -7,6 +7,7 @@ import secrets
 import shutil
 import streamlit as st
 from hand_manager import supprimer_dossier_club
+from theme import barre_laterale, html_bandeau_marque, injecter_theme_connexion
 
 PERMISSIONS_DEFAUT_PAR_ROLE = {
     "super_admin": {
@@ -203,12 +204,20 @@ def init_users_db():
 def ecran_connexion():
     """Écran de login avec contrôle du statut actif/suspendu du club."""
     init_users_db()
-    st.markdown("## 🔐 Connexion à *HandStats Pro*")
+    injecter_theme_connexion()
+    st.markdown(
+        '<div class="hs-login-brand">'
+        '<div class="hs-login-name">HandStats Pro</div>'
+        '<div class="hs-login-tag">Statistiques de match et analyse tactique pour les staffs de handball.</div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     with st.form("login_form"):
+        st.markdown('<div class="hs-form-title">Connexion à votre espace</div>', unsafe_allow_html=True)
         username = st.text_input("Identifiant").strip().lower()
         password = st.text_input("Mot de passe", type="password")
-        submit = st.form_submit_button("Se connecter", use_container_width=True)
+        submit = st.form_submit_button("Se connecter", type="primary", use_container_width=True)
 
         if submit:
             reg = st.session_state.registre_app
@@ -264,42 +273,56 @@ def ecran_connexion():
             else:
                 st.error("Identifiant ou mot de passe incorrect.")
 
-    with st.expander("ℹ️ Comptes de démonstration"):
+    with st.expander("Comptes de démonstration"):
         st.markdown("- **Manager Club** : `admin` / `123` *(Bordeaux Étudiants Club)*")
         st.markdown("- **Staff Multi-équipe** : `leho` / `123`")
         st.markdown("- **Staff (-18M)** : `coach_f` / `123`")
 
 
-def afficher_en_tete_avec_profil(titre_principal):
-    """En-tête avec titre à gauche et menu profil + déconnexion à droite."""
+def afficher_en_tete_avec_profil(titre_principal, sous_titre=None, bouton_parametres=False):
+    """Bandeau de marque (logo, titre, sous-titre) + Paramètres (optionnel) + menu profil.
+    Retourne True si le bouton Paramètres a été cliqué."""
     session = st.session_state.user_session
-    st.write("")
-    col_title, col_profil = st.columns([3.4, 1.6])
+    ouvrir_parametres = False
+
+    if bouton_parametres:
+        col_title, col_params, col_profil = st.columns([4.2, 1.2, 1.8], vertical_alignment="center")
+    else:
+        col_title, col_profil = st.columns([5.4, 1.8], vertical_alignment="center")
+        col_params = None
 
     with col_title:
-        st.markdown(f"## {titre_principal}")
+        st.markdown(
+            html_bandeau_marque(titre_principal, sous_titre, session.get("club"), session.get("club_slug")),
+            unsafe_allow_html=True,
+        )
+
+    if col_params is not None:
+        with col_params:
+            ouvrir_parametres = st.button("Paramètres", key="hs_btn_parametres", use_container_width=True)
 
     with col_profil:
-        with st.popover(f"👤 {session['nom']}", use_container_width=True):
+        with st.popover(session["nom"], use_container_width=True):
             role_labels = {
                 "super_admin": "Super Admin Plateforme",
                 "manager": "Club Manager",
                 "staff": "Staff / Entraîneur",
+                "analyste": "Analyste",
             }
-            st.markdown("### 🎽 Mon Profil")
+            st.markdown("### Mon profil")
             st.markdown(f"**Nom / Prénom :** {session['nom']}")
             st.markdown(f"**Rôle :** {role_labels.get(session['role'], session['role'])}")
             if session.get("club"):
                 st.markdown(f"**Club :** `{session['club']}`")
 
-            if session["role"] == "staff":
+            if session["role"] in ("staff", "analyste"):
                 st.markdown(f"**Équipe active :** `{session.get('equipe_active', 'Aucune')}`")
                 st.markdown(f"**Équipes gérées :** `{', '.join(session.get('equipes', []))}`")
 
                 equipes_gerees = session.get("equipes", [])
                 if len(equipes_gerees) > 1:
                     st.markdown("---")
-                    st.markdown("#### 🔄 Changer d'équipe active")
+                    st.markdown("#### Changer d'équipe active")
                     equipe_actuelle = session.get("equipe_active")
                     nouvelle_equipe = st.selectbox(
                         "Basculer vers :",
@@ -317,40 +340,45 @@ def afficher_en_tete_avec_profil(titre_principal):
                 st.markdown(f"**Équipes enregistrées au club :** `{nb_eq}`")
 
             st.markdown("---")
-            st.markdown("#### 🔑 Sécurité & Mot de passe")
-            with st.form(f"form_change_password_{session['username']}"):
-                nouveau_mdp = st.text_input("Nouveau mot de passe", type="password")
-                confirmer_mdp = st.text_input("Confirmer le mot de passe", type="password")
-                if st.form_submit_button("Modifier mon mot de passe", use_container_width=True):
-                    if nouveau_mdp and nouveau_mdp == confirmer_mdp:
-                        uname = session["username"]
-                        reg = st.session_state.registre_app
-                        if uname in reg["users"]:
-                            reg["users"][uname]["password"] = hasher_mot_de_passe(nouveau_mdp)
-                            sauvegarder_registre(reg)
-                            st.success("Mot de passe mis à jour avec succès !")
-                    else:
-                        st.error("Les mots de passe ne correspondent pas ou sont vides.")
-
-            st.markdown("---")
-            if st.button("🚪 Se déconnecter", type="primary", use_container_width=True):
+            if st.button("Se déconnecter", type="primary", use_container_width=True):
                 st.session_state.user_session = _session_vide()
                 st.rerun()
+
+    return ouvrir_parametres
 
 
 def afficher_espace_super_admin():
     """Console d'administration globale : droits des clubs, accès et comptes."""
-    afficher_en_tete_avec_profil("🛡️ Console Super Admin — Gestion des Clubs & Accès")
     reg = st.session_state.registre_app
     clubs = reg["clubs"]
     users = reg["users"]
 
+    nav_sa_key = "page_super_admin"
+    if nav_sa_key not in st.session_state:
+        st.session_state[nav_sa_key] = "clubs"
+
+    page_sa = barre_laterale(
+        pages=[
+            ("clubs", "Clubs & droits d'accès"),
+            ("comptes", "Comptes & rôles"),
+            ("parametres", "Paramètres"),
+        ],
+        page_active=st.session_state[nav_sa_key],
+        equipe="Administration plateforme",
+        club="HandStats Pro",
+    )
+    if page_sa and page_sa != st.session_state[nav_sa_key]:
+        st.session_state[nav_sa_key] = page_sa
+        st.rerun()
+
+    page_active_sa = st.session_state[nav_sa_key]
+
+    afficher_en_tete_avec_profil("Console plateforme", sous_titre="Clubs, accès et comptes")
+
     st.info("Gérez ici les clubs autorisés, l'activation/suspension de leurs accès et les comptes utilisateurs.")
 
-    tab_clubs, tab_comptes = st.tabs(["🏟️ Clubs & Droits d'accès", "👥 Comptes & Rôles"])
-
-    # --- ONGLET 1 : CLUBS ---
-    with tab_clubs:
+    # --- VUE 1 : CLUBS ---
+    if page_active_sa == "clubs":
         st.subheader("➕ Créer un nouveau club")
         with st.form("form_super_admin_create_club"):
             c1, c2 = st.columns(2)
@@ -452,8 +480,8 @@ def afficher_espace_super_admin():
                         )
                         st.rerun()
 
-    # --- ONGLET 2 : COMPTES ---
-    with tab_comptes:
+    # --- VUE 2 : COMPTES ---
+    elif page_active_sa == "comptes":
         st.subheader("➕ Créer un compte utilisateur")
         liste_clubs = list(clubs.keys())
 
@@ -482,7 +510,7 @@ def afficher_espace_super_admin():
                     st.error("Un compte manager ou staff doit être rattaché à un club.")
                 else:
                     users[u_login] = {
-                        "password": u_pass,
+                        "password": hasher_mot_de_passe(u_pass),
                         "role": u_role,
                         "nom": u_nom.strip(),
                         "club": None if u_role == "super_admin" else u_club,
@@ -509,3 +537,33 @@ def afficher_espace_super_admin():
                             del users[uname]
                             sauvegarder_registre(reg)
                             st.rerun()
+
+    # --- VUE 3 : PARAMÈTRES ---
+    elif page_active_sa == "parametres":
+        st.subheader("⚙️ Paramètres du Compte & Sécurité")
+        afficher_bloc_changement_mot_de_passe(key_suffix="super_admin")
+
+
+def afficher_bloc_changement_mot_de_passe(key_suffix: str = ""):
+    """Affiche le formulaire de changement de mot de passe dans les paramètres généraux."""
+    session = st.session_state.get("user_session", {})
+    uname = session.get("username")
+    if not uname:
+        return
+
+    with st.container(border=True):
+        st.subheader("🔐 Mot de passe et sécurité")
+        st.caption(f"Compte connecté : **{session.get('nom', uname)}** (`{uname}`)")
+        suffix = f"_{key_suffix}" if key_suffix else ""
+        with st.form(f"form_change_password_{uname}{suffix}"):
+            nouveau_mdp = st.text_input("Nouveau mot de passe", type="password")
+            confirmer_mdp = st.text_input("Confirmer le mot de passe", type="password")
+            if st.form_submit_button("Modifier mon mot de passe", type="primary"):
+                if nouveau_mdp and nouveau_mdp == confirmer_mdp:
+                    reg = st.session_state.registre_app
+                    if uname in reg["users"]:
+                        reg["users"][uname]["password"] = hasher_mot_de_passe(nouveau_mdp)
+                        sauvegarder_registre(reg)
+                        st.success("Mot de passe mis à jour avec succès !")
+                else:
+                    st.error("Les mots de passe ne correspondent pas ou sont vides.")
