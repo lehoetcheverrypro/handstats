@@ -28,9 +28,17 @@ else:
         afficher_espace_super_admin()
 
     elif role == "manager":
-        afficher_espace_manager()
+        club_nom = session.get("club")
+        clubs_db = st.session_state.registre_app.get("clubs", {})
+        if not club_nom or not clubs_db.get(club_nom, {}).get("actif", True):
+            st.error("Votre club est suspendu ou introuvable. Veuillez contacter l'administrateur.")
+            if st.button("🚪 Se déconnecter"):
+                st.session_state.user_session = _session_vide()
+                st.rerun()
+        else:
+            afficher_espace_manager()
 
-    elif role == "staff":
+    elif role in ("staff", "analyste"):
         club_nom = session.get("club")
         clubs_db = st.session_state.registre_app.get("clubs", {})
         if not club_nom or not clubs_db.get(club_nom, {}).get("actif", True):

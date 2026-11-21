@@ -3,20 +3,22 @@ import time
 import streamlit as st
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
-from datetime import datetime
+from datetime import date, datetime
 from hand_manager import (
     EquipeManager,
     Gardienne,
     JoueuseDeChamp,
+    calculer_indice_performance_match,
     get_dossier_club,
     get_nom_fichier_equipe,
+    resumer_charge_forme_joueur,
 )
 from feuille_de_match_pdf import generer_pdf_match
 from rapport_chrono_match_pdf import generer_pdf_chronologique
 from exports_match import construire_payload_match, exporter_match_json, exporter_evenements_csv
 from offline_sync import OfflineSyncManager
 from tactics import afficher_tableau_tactique
-from auth_manager import afficher_en_tete_avec_profil
+from auth_manager import a_permission, afficher_en_tete_avec_profil
 from shot_grid import (
     afficher_grille_saisie_interactive,
     afficher_cage_recapitulative,
@@ -40,6 +42,12 @@ def run_staff_app(equipe_assignee):
     equipes_du_club = _get_equipes_du_club_courant()
     if equipes_du_club and equipe_assignee not in equipes_du_club:
         st.error(f"Accès refusé : l'équipe '{equipe_assignee}' n'appartient pas au club '{club_nom_session}'.")
+        return
+
+    role_session = session.get("role")
+    equipes_autorisees_user = session.get("equipes", [])
+    if role_session in ("staff", "analyste") and equipe_assignee not in equipes_autorisees_user:
+        st.error(f"Accès refusé : vous n'êtes pas habilité sur la catégorie '{equipe_assignee}'.")
         return
 
     # Clé préfixée par le club pour éviter toute collision en session
@@ -237,11 +245,17 @@ def run_staff_app(equipe_assignee):
                 "buts_encaisses": getattr(obj_m, "buts_encaisses", 0),
                 "cartons_jaunes": getattr(obj_m, "cartons_jaunes", 0),
                 "exclusions_2min": getattr(obj_m, "exclusions_2min", 0),
+                "cartons_rouges": getattr(obj_m, "cartons_rouges", 0),
             }
 
         secs_cum = st.session_state.get(f"chrono_secondes_cumulees_{ctx_prefix}", 0)
         if st.session_state.get(f"chrono_en_cours_{ctx_prefix}", False) and st.session_state.get(f"chrono_debut_{ctx_prefix}"):
             secs_cum += int(time.time() - st.session_state[f"chrono_debut_{ctx_prefix}"])
+
+        temps_jeu_key = f"temps_jeu_secondes_{ctx_prefix}"
+        temps_jeu_snapshot = dict(st.session_state.get(temps_jeu_key, {}))
+        temps_morts_key = f"temps_morts_match_{ctx_prefix}"
+        temps_morts_snapshot = dict(st.session_state.get(temps_morts_key, {"equipe": 0, "adversaire": 0}))
 
         state_snapshot = {
             "nom_match_actuel": st.session_state.get(f"nom_match_actuel_{ctx_prefix}", "Match"),
@@ -257,6 +271,8 @@ def run_staff_app(equipe_assignee):
             "commentaires_staff": st.session_state.get(f"commentaires_staff_match_{ctx_prefix}", []),
             "zones_tirs_match": st.session_state.get(f"zones_tirs_match_{ctx_prefix}", {}),
             "stats_membres": stats_membres,
+            "temps_jeu_secondes": temps_jeu_snapshot,
+            "temps_morts": temps_morts_snapshot,
         }
         sync_mgr.sauvegarder_brouillon(ctx_prefix, state_snapshot)
 
@@ -287,6 +303,7 @@ def run_staff_app(equipe_assignee):
             if obj_m:
                 obj_m.cartons_jaunes = s_info.get("cartons_jaunes", 0)
                 obj_m.exclusions_2min = s_info.get("exclusions_2min", 0)
+                obj_m.cartons_rouges = s_info.get("cartons_rouges", 0)
                 if isinstance(obj_m, JoueuseDeChamp):
                     obj_m.buts = s_info.get("buts", 0)
                     obj_m.tirs = s_info.get("tirs", 0)
@@ -325,6 +342,8 @@ def run_staff_app(equipe_assignee):
         st.session_state[f"journal_actions_match_{ctx_prefix}"] = st_data.get("journal_actions", [])
         st.session_state[f"commentaires_staff_match_{ctx_prefix}"] = st_data.get("commentaires_staff", [])
         st.session_state[f"zones_tirs_match_{ctx_prefix}"] = st_data.get("zones_tirs_match", {})
+        st.session_state[f"temps_jeu_secondes_{ctx_prefix}"] = st_data.get("temps_jeu_secondes", {})
+        st.session_state[f"temps_morts_match_{ctx_prefix}"] = st_data.get("temps_morts", {"equipe": 0, "adversaire": 0})
         st.session_state[brouillon_restaure_key] = True
 
     restaurer_brouillon_match_local_si_besoin()
@@ -410,6 +429,11 @@ def run_staff_app(equipe_assignee):
             with st.container(border=True):
                 st.markdown(f"### ⚡ Match en cours détecté pour {equipe_assignee} : **{nom_m}**")
                 st.write("Le match précédent n'a pas été archivé. Vos données et votre chrono sont en sécurité.")
+                tm_acc = st.session_state.get(f"temps_morts_match_{ctx_prefix}", {"equipe": 0, "adversaire": 0})
+                st.caption(
+                    f"Temps morts utilisés — **{equipe_assignee}** : `{int(tm_acc.get('equipe', 0))}/3` • "
+                    f"**Adversaire** : `{int(tm_acc.get('adversaire', 0))}/3`"
+                )
                 if st.button("▶️ Reprendre le match en cours", type="primary", use_container_width=True, key=f"btn_reprendre_{ctx_prefix}"):
                     aller_a("match")
             st.markdown("---")
@@ -423,8 +447,17 @@ def run_staff_app(equipe_assignee):
             with st.container(border=True):
                 st.markdown("#### ⚡ Saisie & Match")
                 st.write("Feuille de match en direct, tirs, duels, pertes de balle et discipline.")
-                if st.button("Lancer / Match en direct", type="primary", use_container_width=True, key=f"btn_nav_match_{ctx_prefix}"):
+                peut_saisir_match = a_permission("saisie_match")
+                if st.button(
+                    "Lancer / Match en direct",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not peut_saisir_match,
+                    key=f"btn_nav_match_{ctx_prefix}",
+                ):
                     aller_a("match")
+                if not peut_saisir_match:
+                    st.caption("🔒 Saisie de match désactivée pour votre profil.")
 
         with col2:
             with st.container(border=True):
@@ -448,6 +481,10 @@ def run_staff_app(equipe_assignee):
             aller_a("accueil")
 
         st.header(f"⚡ Cockpit de Match en Direct — {equipe_assignee}")
+
+        if not a_permission("saisie_match"):
+            st.warning("Accès restreint : votre profil ne dispose pas de la permission de saisie de match en direct.")
+            return
 
         if not manager.joueuses:
             st.warning(f"Aucun(e) {L['joueur']} enregistré(e). Rendez-vous dans l'onglet 'Effectif' pour en ajouter.")
@@ -752,6 +789,10 @@ def run_staff_app(equipe_assignee):
                             p_obj.cartons_jaunes = max(0, p_obj.cartons_jaunes - 1)
                         elif t_act == "Exclusion 2min":
                             p_obj.exclusions_2min = max(0, p_obj.exclusions_2min - 1)
+                            if p_obj.exclusions_2min < 3 and getattr(p_obj, "cartons_rouges", 0) > 0:
+                                p_obj.cartons_rouges = 0
+                        elif t_act in ("Carton Rouge", "Carton Rouge (3x2min)"):
+                            p_obj.cartons_rouges = max(0, getattr(p_obj, "cartons_rouges", 0) - 1)
                         elif t_act.startswith("But ("):
                             p_obj.buts = max(0, p_obj.buts - 1)
                             p_obj.tirs = max(0, p_obj.tirs - 1)
@@ -768,10 +809,83 @@ def run_staff_app(equipe_assignee):
 
                     elif t_act == "Attaque adverse" and sys_adv and att_adv_key in st.session_state:
                         st.session_state[att_adv_key][sys_adv] = max(0, st.session_state[att_adv_key].get(sys_adv, 0) - 1)
+                    elif t_act == "Temps mort":
+                        camp_tm = derniere.get("temps_mort_camp")
+                        if camp_tm in ("equipe", "adversaire") and temps_morts_key in st.session_state:
+                            st.session_state[temps_morts_key][camp_tm] = max(
+                                0, int(st.session_state[temps_morts_key].get(camp_tm, 0)) - 1
+                            )
 
                     sauvegarder_effectif_securise()
                     sauvegarder_brouillon_match_local()
                     st.toast(f"Action annulée : {t_act} ({derniere.get('details', '')})", icon="↩️")
+
+                temps_jeu_key = f"temps_jeu_secondes_{ctx_prefix}"
+                if temps_jeu_key not in st.session_state:
+                    st.session_state[temps_jeu_key] = {}
+
+                temps_morts_key = f"temps_morts_match_{ctx_prefix}"
+                if temps_morts_key not in st.session_state:
+                    st.session_state[temps_morts_key] = {"equipe": 0, "adversaire": 0}
+
+                def accumuler_temps_jeu_depuis_dernier_tick():
+                    tick_key = f"dernier_tick_jeu_{ctx_prefix}"
+                    maintenant = time.time()
+                    if st.session_state.get(chrono_enc_key, False):
+                        precedent = st.session_state.get(tick_key)
+                        if precedent is not None:
+                            delta = max(0.0, maintenant - float(precedent))
+                            if delta > 0:
+                                for n_ter in st.session_state.get(terrain_key, []):
+                                    if get_membre(n_ter):
+                                        st.session_state[temps_jeu_key][n_ter] = (
+                                            float(st.session_state[temps_jeu_key].get(n_ter, 0.0)) + delta
+                                        )
+                    st.session_state[tick_key] = maintenant
+
+                def appliquer_exclusion_2min(membre_obj):
+                    membre_obj.exclusions_2min = getattr(membre_obj, "exclusions_2min", 0) + 1
+                    enregistrer_action(
+                        "Exclusion 2min",
+                        f"#{membre_obj.numero} {membre_obj.nom}",
+                        membre_nom=membre_obj.nom,
+                    )
+                    if membre_obj.exclusions_2min >= 3 and getattr(membre_obj, "cartons_rouges", 0) < 1:
+                        membre_obj.cartons_rouges = 1
+                        enregistrer_action(
+                            "Carton Rouge (3x2min)",
+                            f"#{membre_obj.numero} {membre_obj.nom} (Disqualification après 3 exclusions de 2 min)",
+                            membre_nom=membre_obj.nom,
+                        )
+                        st.toast(f"🟥 Carton rouge automatique (3×2 min) : #{membre_obj.numero} {membre_obj.nom}", icon="🟥")
+                    else:
+                        st.toast(f"Exclusion 2min ({membre_obj.exclusions_2min}/3) : #{membre_obj.numero} {membre_obj.nom}", icon="⏱️")
+
+                def appliquer_carton_rouge_direct(membre_obj):
+                    membre_obj.cartons_rouges = 1
+                    enregistrer_action(
+                        "Carton Rouge",
+                        f"#{membre_obj.numero} {membre_obj.nom} (Carton rouge direct)",
+                        membre_nom=membre_obj.nom,
+                    )
+                    st.toast(f"🟥 Carton rouge direct : #{membre_obj.numero} {membre_obj.nom}", icon="🟥")
+
+                def enregistrer_temps_mort(camp: str):
+                    tm_dict = st.session_state.get(temps_morts_key, {"equipe": 0, "adversaire": 0})
+                    cle = "equipe" if camp == "equipe" else "adversaire"
+                    actuel = int(tm_dict.get(cle, 0))
+                    if actuel >= 3:
+                        st.toast("Maximum de 3 temps morts déjà atteint.", icon="⚠️")
+                        return
+                    tm_dict[cle] = actuel + 1
+                    st.session_state[temps_morts_key] = tm_dict
+                    lib_camp = equipe_assignee if cle == "equipe" else "Adversaire"
+                    enregistrer_action(
+                        "Temps mort",
+                        f"Temps mort {lib_camp} ({tm_dict[cle]}/3)",
+                        temps_mort_camp=cle,
+                    )
+                    st.toast(f"⏱️ Temps mort {lib_camp} ({tm_dict[cle]}/3) enregistré.", icon="⏱️")
 
                 # ==========================================
                 # MODALE SÉQUENTIELLE EN 2 ÉTAPES (TERRAIN ➔ CAGE)
@@ -892,6 +1006,8 @@ def run_staff_app(equipe_assignee):
                 if st.session_state.get(chrono_enc_key, False) and not st.session_state.get(popup_key):
                     st_autorefresh(interval=1000, key=f"chrono_auto_refresh_{ctx_prefix}")
 
+                accumuler_temps_jeu_depuis_dernier_tick()
+
                 total_buts_marques = sum(get_membre(n).buts for n in joueuses_actives if get_membre(n) and hasattr(get_membre(n), 'buts'))
                 total_buts_encaisses = sum(get_membre(n).buts_encaisses for n in joueuses_actives if get_membre(n) and isinstance(get_membre(n), Gardienne))
                 temps_actuel_str = formater_temps(secondes_totales)
@@ -996,7 +1112,17 @@ def run_staff_app(equipe_assignee):
                             prefix = get_prefix_couleur(p_item.poste)
 
                             num_actuel = get_numero_actif(p_item.nom)
-                            label_btn = f"{prefix} #{num_actuel} {p_item.nom.split()[0]}"
+                            nb_2m = int(getattr(p_item, "exclusions_2min", 0) or 0)
+                            nb_cr = int(getattr(p_item, "cartons_rouges", 0) or 0)
+                            nb_cj = int(getattr(p_item, "cartons_jaunes", 0) or 0)
+                            signe_disc = ""
+                            if nb_cr > 0 or nb_2m >= 3:
+                                signe_disc = " 🟥"
+                            elif nb_2m > 0:
+                                signe_disc = f" ⏱️×{nb_2m}" if nb_2m > 1 else " ⏱️"
+                            elif nb_cj > 0:
+                                signe_disc = " 🟨"
+                            label_btn = f"{prefix} #{num_actuel} {p_item.nom.split()[0]}{signe_disc}"
 
                             if st.button(label_btn, key=f"terrain_j_{ctx_prefix}_{nom_j}", use_container_width=True, type=type_btn):
                                 st.session_state[focus_key] = nom_j
@@ -1183,11 +1309,14 @@ def run_staff_app(equipe_assignee):
                                             st.rerun()
                                     with bs2:
                                         if st.button("⏱️ + 2min", key=f"btn_2min_{ctx_prefix}_{p_obj.nom}", use_container_width=True):
-                                            p_obj.exclusions_2min += 1
-                                            enregistrer_action("Exclusion 2min", f"#{p_obj.numero} {p_obj.nom}", membre_nom=p_obj.nom)
+                                            appliquer_exclusion_2min(p_obj)
                                             manager.sauvegarder_donnees()
-                                            st.toast(f"Exclusion 2min : #{p_obj.numero} {p_obj.nom}", icon="⏱️")
                                             st.rerun()
+
+                                    if st.button("🟥 Carton Rouge", key=f"btn_rouge_{ctx_prefix}_{p_obj.nom}", use_container_width=True):
+                                        appliquer_carton_rouge_direct(p_obj)
+                                        manager.sauvegarder_donnees()
+                                        st.rerun()
 
                         elif isinstance(p_obj, Gardienne):
                             g1, g2 = st.columns(2)
@@ -1223,10 +1352,12 @@ def run_staff_app(equipe_assignee):
                                     st.toast(f"Tir raté ({L['gardien'].lower()}) : #{p_obj.numero} {p_obj.nom}", icon="🔴")
                                     st.rerun()
                                 if st.button("⏱️ + 2min", key=f"btn_g2min_{ctx_prefix}_{p_obj.nom}", use_container_width=True):
-                                    p_obj.exclusions_2min += 1
-                                    enregistrer_action("Exclusion 2min", f"#{p_obj.numero} {p_obj.nom} ({L['gardien']})", membre_nom=p_obj.nom)
+                                    appliquer_exclusion_2min(p_obj)
                                     manager.sauvegarder_donnees()
-                                    st.toast(f"Exclusion 2min : #{p_obj.numero} {p_obj.nom}", icon="⏱️")
+                                    st.rerun()
+                                if st.button("🟥 Carton Rouge", key=f"btn_grouge_{ctx_prefix}_{p_obj.nom}", use_container_width=True):
+                                    appliquer_carton_rouge_direct(p_obj)
+                                    manager.sauvegarder_donnees()
                                     st.rerun()
 
                 # --- SUIVI TACTIQUE & NOTES DU BANC ---
@@ -1327,16 +1458,18 @@ def run_staff_app(equipe_assignee):
                         if isinstance(j, JoueuseDeChamp):
                             data_terrain.append({
                                 "N°": num_actuel, "Nom": j.nom, "Poste": j.poste,
+                                "Min": round(float(st.session_state.get(temps_jeu_key, {}).get(j.nom, 0.0)) / 60.0, 1),
                                 "Buts/Tirs": f"{j.buts}/{j.tirs} ({j.efficacite_tirs()}%)",
                                 "Passes D.": j.passes_decisives, "Pertes": j.pertes_de_balles_passe + j.pertes_de_balles_faute,
-                                "🟨": j.cartons_jaunes, "⏱️": j.exclusions_2min
+                                "🟨": j.cartons_jaunes, "⏱️": j.exclusions_2min, "🟥": getattr(j, "cartons_rouges", 0)
                             })
                         elif isinstance(j, Gardienne):
                             data_terrain.append({
                                 "N°": num_actuel, "Nom": j.nom, "Poste": L["gardien"],
+                                "Min": round(float(st.session_state.get(temps_jeu_key, {}).get(j.nom, 0.0)) / 60.0, 1),
                                 "Buts/Tirs": f"{j.buts}/{j.tirs} ({round(j.buts / j.tirs * 100, 1) if j.tirs > 0 else 0.0}%)",
                                 "Arrêts/Subis": f"{j.arrets}/{j.tirs_subis} ({j.pourcentage_arrets()}%)",
-                                "🟨": j.cartons_jaunes, "⏱️": j.exclusions_2min
+                                "🟨": j.cartons_jaunes, "⏱️": j.exclusions_2min, "🟥": getattr(j, "cartons_rouges", 0)
                             })
                     if data_terrain:
                         st.dataframe(data_terrain, use_container_width=True, hide_index=True)
@@ -1409,6 +1542,31 @@ def run_staff_app(equipe_assignee):
                             st.markdown(f"- `{note['temps']}` : {note['texte']}")
 
                     st.markdown("---")
+                    st.markdown("### ⏱️ Temps Morts (Max 3 par camp)")
+                    tm_etat = st.session_state.get(temps_morts_key, {"equipe": 0, "adversaire": 0})
+                    tm_eq_val = int(tm_etat.get("equipe", 0))
+                    tm_adv_val = int(tm_etat.get("adversaire", 0))
+                    tm_c1, tm_c2 = st.columns(2)
+                    with tm_c1:
+                        if st.button(
+                            f"⏱️ Temps mort {equipe_assignee} ({tm_eq_val}/3)",
+                            key=f"btn_tm_eq_{ctx_prefix}",
+                            disabled=(tm_eq_val >= 3),
+                            use_container_width=True,
+                        ):
+                            enregistrer_temps_mort("equipe")
+                            st.rerun()
+                    with tm_c2:
+                        if st.button(
+                            f"⏱️ Temps mort Adversaire ({tm_adv_val}/3)",
+                            key=f"btn_tm_adv_{ctx_prefix}",
+                            disabled=(tm_adv_val >= 3),
+                            use_container_width=True,
+                        ):
+                            enregistrer_temps_mort("adversaire")
+                            st.rerun()
+
+                    st.markdown("---")
                     st.markdown("### 📋 Tableau Blanc Tactique (Vestiaires)")
                     afficher_tableau_tactique()
 
@@ -1445,6 +1603,7 @@ def run_staff_app(equipe_assignee):
                                         c_prov = st.number_input("Pertes provoquées", min_value=0, value=getattr(p_corr, 'pertes_balles_provoquees', 0))
                                         c_jaune = st.number_input("Cartons jaunes", min_value=0, value=getattr(p_corr, 'cartons_jaunes', 0))
                                         c_2min = st.number_input("Exclusions 2min", min_value=0, value=getattr(p_corr, 'exclusions_2min', 0))
+                                        c_rouge = st.number_input("Cartons rouges", min_value=0, value=getattr(p_corr, 'cartons_rouges', 0))
 
                                     if st.form_submit_button("Valider la correction", type="primary", use_container_width=True):
                                         p_corr.buts = c_buts
@@ -1461,6 +1620,7 @@ def run_staff_app(equipe_assignee):
                                         p_corr.pertes_balles_provoquees = c_prov
                                         p_corr.cartons_jaunes = c_jaune
                                         p_corr.exclusions_2min = c_2min
+                                        p_corr.cartons_rouges = c_rouge
                                         manager.sauvegarder_donnees()
                                         st.success("Correction enregistrée avec succès !")
                                         st.rerun()
@@ -1476,6 +1636,7 @@ def run_staff_app(equipe_assignee):
                                         c_buts = st.number_input("Buts marqués", min_value=0, value=getattr(p_corr, 'buts', 0))
                                         c_tirs = st.number_input("Tirs totaux pris (attaque)", min_value=0, value=getattr(p_corr, 'tirs', 0))
                                         c_2min = st.number_input("Exclusions 2min", min_value=0, value=getattr(p_corr, 'exclusions_2min', 0))
+                                        c_rouge = st.number_input("Cartons rouges", min_value=0, value=getattr(p_corr, 'cartons_rouges', 0))
 
                                     if st.form_submit_button("Valider la correction", type="primary", use_container_width=True):
                                         p_corr.arrets = c_arrets
@@ -1485,6 +1646,7 @@ def run_staff_app(equipe_assignee):
                                         p_corr.buts = c_buts
                                         p_corr.tirs = c_tirs
                                         p_corr.exclusions_2min = c_2min
+                                        p_corr.cartons_rouges = c_rouge
                                         manager.sauvegarder_donnees()
                                         st.success("Correction enregistrée avec succès !")
                                         st.rerun()
@@ -1501,6 +1663,7 @@ def run_staff_app(equipe_assignee):
                                 if obj_j:
                                     obj_j.cartons_jaunes = 0
                                     obj_j.exclusions_2min = 0
+                                    obj_j.cartons_rouges = 0
                                     if isinstance(obj_j, JoueuseDeChamp):
                                         obj_j.buts = 0
                                         obj_j.tirs = 0
@@ -1534,13 +1697,87 @@ def run_staff_app(equipe_assignee):
                             if f"journal_actions_match_{ctx_prefix}" in st.session_state:
                                 del st.session_state[f"journal_actions_match_{ctx_prefix}"]
 
+                            st.session_state[temps_jeu_key] = {}
+                            st.session_state[temps_morts_key] = {"equipe": 0, "adversaire": 0}
                             st.toast("Le match a été annulé avec succès.", icon="🗑️")
                             aller_a("accueil")
+
+                    st.write("")
+                    with st.expander("🔋 Charge & Forme de fin de match (Optionnel — Alimente le suivi longitudinal)", expanded=False):
+                        date_cloture_match = st.date_input(
+                            "Date de la rencontre",
+                            value=date.today(),
+                            key=f"date_cloture_match_{ctx_prefix}",
+                        )
+                        lignes_cloture_init = []
+                        for n_act in joueuses_actives:
+                            m_obj = get_membre(n_act)
+                            if m_obj:
+                                secs_joues_auto = float(st.session_state.get(temps_jeu_key, {}).get(m_obj.nom, 0.0))
+                                min_auto = int(round(secs_joues_auto / 60.0)) if secs_joues_auto > 0 else 0
+                                lignes_cloture_init.append({
+                                    "Nom": m_obj.nom,
+                                    "Poste": m_obj.poste,
+                                    "Temps (min)": min_auto,
+                                    "RPE (1-10)": 6.0,
+                                    "Forme (1-5)": 3.0,
+                                })
+                        df_cloture_edit = st.data_editor(
+                            pd.DataFrame(lignes_cloture_init),
+                            column_config={
+                                "Nom": st.column_config.TextColumn(disabled=True),
+                                "Poste": st.column_config.TextColumn(disabled=True),
+                                "Temps (min)": st.column_config.NumberColumn(min_value=0, max_value=120, step=1),
+                                "RPE (1-10)": st.column_config.NumberColumn(min_value=1.0, max_value=10.0, step=0.5),
+                                "Forme (1-5)": st.column_config.NumberColumn(min_value=1.0, max_value=5.0, step=0.5),
+                            },
+                            hide_index=True,
+                            use_container_width=True,
+                            key=f"editor_cloture_longitudinal_{ctx_prefix}",
+                        )
 
                     st.write("")
                     if st.button("🏁 Archiver définitivement ce match et réinitialiser", type="primary", use_container_width=True, key=f"btn_archiver_match_{ctx_prefix}"):
                         pretes_dict = st.session_state.get(pretes_key, {})
                         dict_nums_match = st.session_state.get(f"numeros_match_{ctx_prefix}", {})
+
+                        # Capture des stats individuelles avant remise à zéro par archiver_match()
+                        indices_perf_avant_archive = {}
+                        for n_act in joueuses_actives:
+                            m_obj = get_membre(n_act)
+                            if m_obj:
+                                est_g = isinstance(m_obj, Gardienne)
+                                stats_snapshot = (
+                                    {
+                                        "arrets": getattr(m_obj, "arrets", 0),
+                                        "tirs_subis": getattr(m_obj, "tirs_subis", 0),
+                                        "buts": getattr(m_obj, "buts", 0),
+                                        "cartons_jaunes": getattr(m_obj, "cartons_jaunes", 0),
+                                        "exclusions_2min": getattr(m_obj, "exclusions_2min", 0),
+                                        "cartons_rouges": getattr(m_obj, "cartons_rouges", 0),
+                                    }
+                                    if est_g
+                                    else {
+                                        "buts": getattr(m_obj, "buts", 0),
+                                        "tirs": getattr(m_obj, "tirs", 0),
+                                        "passes_decisives": getattr(m_obj, "passes_decisives", 0),
+                                        "interceptions": getattr(m_obj, "interceptions", 0),
+                                        "neutralisations": getattr(m_obj, "neutralisations", 0),
+                                        "balles_provoquees": getattr(m_obj, "pertes_balles_provoquees", 0),
+                                        "duels_off_gagnes": getattr(m_obj, "duels_off_gagnes", 0),
+                                        "duels_def_gagnes": getattr(m_obj, "duels_def_gagnes", 0),
+                                        "pertes_passe": getattr(m_obj, "pertes_de_balles_passe", 0),
+                                        "pertes_faute": getattr(m_obj, "pertes_de_balles_faute", 0),
+                                        "duels_off_perdus": getattr(m_obj, "duels_off_perdus", 0),
+                                        "duels_def_perdus": getattr(m_obj, "duels_def_perdus", 0),
+                                        "cartons_jaunes": getattr(m_obj, "cartons_jaunes", 0),
+                                        "exclusions_2min": getattr(m_obj, "exclusions_2min", 0),
+                                        "cartons_rouges": getattr(m_obj, "cartons_rouges", 0),
+                                    }
+                                )
+                                indices_perf_avant_archive[n_act] = calculer_indice_performance_match(
+                                    stats_snapshot, est_gardienne=est_g
+                                )
 
                         manager.archiver_match(
                             nom_match_actuel,
@@ -1552,6 +1789,23 @@ def run_staff_app(equipe_assignee):
                             pretes_dict=pretes_dict,
                             club_equipes=_get_equipes_du_club_courant(),
                         )
+
+                        # Enregistrement longitudinal de match pour les joueurs de l'effectif principal
+                        if df_cloture_edit is not None and not df_cloture_edit.empty:
+                            for _, row_c in df_cloture_edit.iterrows():
+                                nom_c = row_c.get("Nom")
+                                if nom_c in manager.joueuses:
+                                    manager.ajouter_entree_longitudinale(
+                                        nom_joueur=nom_c,
+                                        date_str=date_cloture_match.isoformat(),
+                                        type_entree="Match",
+                                        duree_min=row_c.get("Temps (min)", 0),
+                                        rpe=row_c.get("RPE (1-10)", 6.0),
+                                        forme=row_c.get("Forme (1-5)", 3.0),
+                                        libelle=nom_match_actuel,
+                                        performance_score=indices_perf_avant_archive.get(nom_c),
+                                        note="Clôture match",
+                                    )
                         sync_mgr.supprimer_brouillon(ctx_prefix)
 
                         st.session_state[f"match_en_cours_{ctx_prefix}"] = False
@@ -1559,6 +1813,8 @@ def run_staff_app(equipe_assignee):
                         st.session_state[zones_key] = {}
                         st.session_state[popup_key] = None
                         st.session_state[pretes_key] = {}
+                        st.session_state[temps_jeu_key] = {}
+                        st.session_state[temps_morts_key] = {"equipe": 0, "adversaire": 0}
                         st.toast("Le match a été archivé avec succès !", icon="✅")
                         aller_a("accueil")
 
@@ -1582,10 +1838,11 @@ def run_staff_app(equipe_assignee):
                     if m["match"] not in matchs_archives:
                         matchs_archives.append(m["match"])
 
-            sub_tab_matchs, sub_tab_equipe, sub_tab_joueuses = st.tabs([
+            sub_tab_matchs, sub_tab_equipe, sub_tab_joueuses, sub_tab_charge = st.tabs([
                 "📋 Feuilles de Match Archivées",
                 "👥 Statistiques Équipe",
-                f"👤 Statistiques par {L['joueur'].capitalize()}"
+                f"👤 Statistiques par {L['joueur'].capitalize()}",
+                "🔋 Charge & Forme",
             ])
 
             # --- SOUS-ONGLET 1 : FEUILLES DE MATCH ARCHIVÉES ---
@@ -1605,7 +1862,15 @@ def run_staff_app(equipe_assignee):
                         with col_del_match:
                             st.write("")
                             st.write("")
-                            if st.button("🗑️ Supprimer", key=f"btn_suppr_match_arch_{ctx_prefix}", type="secondary", use_container_width=True, help="Efface définitivement ce match de l'historique de l'équipe"):
+                            peut_supprimer_archive = a_permission("supprimer_archive")
+                            if st.button(
+                                "🗑️ Supprimer",
+                                key=f"btn_suppr_match_arch_{ctx_prefix}",
+                                type="secondary",
+                                use_container_width=True,
+                                disabled=not peut_supprimer_archive,
+                                help="Efface définitivement ce match de l'historique de l'équipe" if peut_supprimer_archive else "Permission 'Suppression de matchs archivés' requise",
+                            ):
                                 for j_del in tous_membres_saison:
                                     j_del.historique_matchs = [m for m in j_del.historique_matchs if m["match"] != match_choisi]
                                 manager.sauvegarder_donnees()
@@ -1678,7 +1943,8 @@ def run_staff_app(equipe_assignee):
                                             "Neutralisations": donnees_m.get("neutralisations", 0),
                                             "Provoquées": donnees_m.get("balles_provoquees", 0),
                                             "🟨": donnees_m.get("cartons_jaunes", 0),
-                                            "⏱️ 2min": donnees_m.get("exclusions_2min", 0)
+                                            "⏱️ 2min": donnees_m.get("exclusions_2min", 0),
+                                            "🟥": donnees_m.get("cartons_rouges", 0),
                                         })
                                     elif isinstance(j, Gardienne):
                                         if j.nom in seen_gard_noms:
@@ -1698,7 +1964,8 @@ def run_staff_app(equipe_assignee):
                                             "% Arrêts": f"{round((arrets_val / subis_val * 100), 1)}%" if subis_val > 0 else "0.0%",
                                             "Buts Encaissés": donnees_m.get("buts_encaisses", 0),
                                             "🟨": donnees_m.get("cartons_jaunes", 0),
-                                            "⏱️ 2min": donnees_m.get("exclusions_2min", 0)
+                                            "⏱️ 2min": donnees_m.get("exclusions_2min", 0),
+                                            "🟥": donnees_m.get("cartons_rouges", 0),
                                         })
 
                         def _tri_ligne_num(row):
@@ -1840,75 +2107,78 @@ def run_staff_app(equipe_assignee):
                         
                         st.markdown("### 📥 Téléchargements des Rapports")
 
-                        pdf_officiel_bytes = generer_pdf_match(
-                            nom_match=match_choisi, score_eq=score_eq, score_adv=score_adv,
-                            lignes_champ=lignes_champ, lignes_gardiennes=lignes_gardiennes,
-                            zones_tirs=agregat_tirs_match_arc, zones_gardiennes=agregat_gard_match_arc,
-                            attaques_adversaires=attaques_adv_archive,
-                            club_nom=club_nom_session,
-                            equipe_nom=equipe_assignee,
-                            dossier_club=dossier_club_session,
-                        )
-                        pdf_chrono_bytes = generer_pdf_chronologique(
-                            nom_match=match_choisi, score_eq=score_eq, score_adv=score_adv,
-                            historique_actions=journal_actions_archive, attaques_adv=attaques_adv_archive,
-                            commentaires_staff=commentaires_staff_archive,
-                            club_nom=club_nom_session,
-                            equipe_nom=equipe_assignee, bilan_post_match=bilan_existant,
-                            dossier_club=dossier_club_session,
-                        )
-
-                        col_btn1, col_btn2 = st.columns(2)
-                        with col_btn1:
-                            st.download_button(
-                                "📥 Feuille de Match Officielle (PDF)",
-                                data=pdf_officiel_bytes,
-                                file_name=f"feuille_match_{match_choisi}.pdf",
-                                mime="application/pdf",
-                                key=f"dl_pdf_off_{ctx_prefix}_{match_choisi}",
+                        if not a_permission("exports"):
+                            st.info("🔒 L'export de rapports (PDF, CSV, JSON) n'est pas activé pour votre profil.")
+                        else:
+                            pdf_officiel_bytes = generer_pdf_match(
+                                nom_match=match_choisi, score_eq=score_eq, score_adv=score_adv,
+                                lignes_champ=lignes_champ, lignes_gardiennes=lignes_gardiennes,
+                                zones_tirs=agregat_tirs_match_arc, zones_gardiennes=agregat_gard_match_arc,
+                                attaques_adversaires=attaques_adv_archive,
+                                club_nom=club_nom_session,
+                                equipe_nom=equipe_assignee,
+                                dossier_club=dossier_club_session,
                             )
-                        with col_btn2:
-                            st.download_button(
-                                "📥 Rapport Chronologique & Tactique (PDF)",
-                                data=pdf_chrono_bytes,
-                                file_name=f"resume_chrono_{match_choisi}.pdf",
-                                mime="application/pdf",
-                                key=f"dl_pdf_chrono_{ctx_prefix}_{match_choisi}",
+                            pdf_chrono_bytes = generer_pdf_chronologique(
+                                nom_match=match_choisi, score_eq=score_eq, score_adv=score_adv,
+                                historique_actions=journal_actions_archive, attaques_adv=attaques_adv_archive,
+                                commentaires_staff=commentaires_staff_archive,
+                                club_nom=club_nom_session,
+                                equipe_nom=equipe_assignee, bilan_post_match=bilan_existant,
+                                dossier_club=dossier_club_session,
                             )
 
-                        payload_match = construire_payload_match(
-                            nom_match=match_choisi,
-                            club_nom=club_nom_session,
-                            equipe_nom=equipe_assignee,
-                            score_eq=score_eq,
-                            score_adv=score_adv,
-                            lignes_champ=lignes_champ,
-                            lignes_gardiennes=lignes_gardiennes,
-                            historique_actions=journal_actions_archive,
-                            attaques_adv=attaques_adv_archive,
-                            commentaires_staff=commentaires_staff_archive,
-                            bilan_post_match=bilan_existant,
-                            statut_match="archive",
-                        )
+                            col_btn1, col_btn2 = st.columns(2)
+                            with col_btn1:
+                                st.download_button(
+                                    "📥 Feuille de Match Officielle (PDF)",
+                                    data=pdf_officiel_bytes,
+                                    file_name=f"feuille_match_{match_choisi}.pdf",
+                                    mime="application/pdf",
+                                    key=f"dl_pdf_off_{ctx_prefix}_{match_choisi}",
+                                )
+                            with col_btn2:
+                                st.download_button(
+                                    "📥 Rapport Chronologique & Tactique (PDF)",
+                                    data=pdf_chrono_bytes,
+                                    file_name=f"resume_chrono_{match_choisi}.pdf",
+                                    mime="application/pdf",
+                                    key=f"dl_pdf_chrono_{ctx_prefix}_{match_choisi}",
+                                )
 
-                        st.write("")
-                        col_exp1, col_exp2 = st.columns(2)
-                        with col_exp1:
-                            st.download_button(
-                                "📊 Export Événements / Vidéo (CSV)",
-                                data=exporter_evenements_csv(payload_match).encode("utf-8-sig"),
-                                file_name=f"evenements_{match_choisi}.csv",
-                                mime="text/csv",
-                                key=f"dl_csv_ev_{ctx_prefix}_{match_choisi}",
+                            payload_match = construire_payload_match(
+                                nom_match=match_choisi,
+                                club_nom=club_nom_session,
+                                equipe_nom=equipe_assignee,
+                                score_eq=score_eq,
+                                score_adv=score_adv,
+                                lignes_champ=lignes_champ,
+                                lignes_gardiennes=lignes_gardiennes,
+                                historique_actions=journal_actions_archive,
+                                attaques_adv=attaques_adv_archive,
+                                commentaires_staff=commentaires_staff_archive,
+                                bilan_post_match=bilan_existant,
+                                statut_match="archive",
                             )
-                        with col_exp2:
-                            st.download_button(
-                                "🧩 Export Match Structuré / API (JSON)",
-                                data=exporter_match_json(payload_match).encode("utf-8"),
-                                file_name=f"match_{match_choisi}.json",
-                                mime="application/json",
-                                key=f"dl_json_match_{ctx_prefix}_{match_choisi}",
-                            )
+
+                            st.write("")
+                            col_exp1, col_exp2 = st.columns(2)
+                            with col_exp1:
+                                st.download_button(
+                                    "📊 Export Événements / Vidéo (CSV)",
+                                    data=exporter_evenements_csv(payload_match).encode("utf-8-sig"),
+                                    file_name=f"evenements_{match_choisi}.csv",
+                                    mime="text/csv",
+                                    key=f"dl_csv_ev_{ctx_prefix}_{match_choisi}",
+                                )
+                            with col_exp2:
+                                st.download_button(
+                                    "🧩 Export Match Structuré / API (JSON)",
+                                    data=exporter_match_json(payload_match).encode("utf-8"),
+                                    file_name=f"match_{match_choisi}.json",
+                                    mime="application/json",
+                                    key=f"dl_json_match_{ctx_prefix}_{match_choisi}",
+                                )
                            
             # --- SOUS-ONGLET 2 : STATISTIQUES ÉQUIPE ---
             with sub_tab_equipe:
@@ -2144,6 +2414,93 @@ def run_staff_app(equipe_assignee):
                                 st.line_chart(df_j_tend[["Buts"]])
 
                             st.divider()
+                            st.markdown("### 🔋 Suivi Longitudinal Individuel (Charge, Forme & Performance)")
+
+                            suivi_j_list = list(getattr(p, "suivi_longitudinal", []) or [])
+                            if not suivi_j_list and p.historique_matchs:
+                                # Alimentation visuelle automatique depuis l'historique match si aucune entrée saisie manuellement
+                                for idx_m, m_hist in enumerate(p.historique_matchs, start=1):
+                                    suivi_j_list.append({
+                                        "date": f"Match {idx_m}",
+                                        "type": "Match",
+                                        "libelle": m_hist.get("match", f"Match {idx_m}"),
+                                        "duree_min": 0,
+                                        "rpe": None,
+                                        "charge_ua": 0.0,
+                                        "forme": None,
+                                        "performance_score": calculer_indice_performance_match(
+                                            m_hist, est_gardienne=isinstance(p, Gardienne)
+                                        ),
+                                        "note": "",
+                                    })
+
+                            if suivi_j_list:
+                                res_ind = resumer_charge_forme_joueur(p)
+                                i_c1, i_c2, i_c3, i_c4 = st.columns(4)
+                                i_c1.metric("Charge 7j", f"{res_ind['charge_7j']} UA")
+                                i_c2.metric("Ratio ACWR", res_ind["acwr"] if res_ind["acwr"] is not None else "-")
+                                i_c3.metric("Forme Moyenne", f"{res_ind['forme_moy']} / 5" if res_ind["forme_moy"] is not None else "-")
+                                i_c4.metric("Statut", res_ind["statut"])
+
+                                rows_courbes = []
+                                rows_table = []
+                                for idx_s, s_item in enumerate(suivi_j_list, start=1):
+                                    etiquette = f"{s_item.get('date', '')} • {s_item.get('libelle', s_item.get('type', ''))}".strip(" •")
+                                    if not etiquette:
+                                        etiquette = f"Entrée {idx_s}"
+                                    perf_val = s_item.get("performance_score")
+                                    if perf_val is None and s_item.get("type") == "Match":
+                                        m_corresp = next(
+                                            (mh for mh in p.historique_matchs if mh.get("match") == s_item.get("libelle")),
+                                            None,
+                                        )
+                                        if m_corresp:
+                                            perf_val = calculer_indice_performance_match(
+                                                m_corresp, est_gardienne=isinstance(p, Gardienne)
+                                            )
+
+                                    c_ua_val = float(
+                                        s_item.get("charge_ua")
+                                        or (float(s_item.get("duree_min", 0) or 0) * float(s_item.get("rpe", 0) or 0))
+                                    )
+                                    forme_val = s_item.get("forme")
+
+                                    rows_courbes.append({
+                                        "Événement": etiquette,
+                                        "Charge (UA)": c_ua_val,
+                                        "Forme (/5)": float(forme_val) if forme_val is not None else None,
+                                        "Indice Perf. (/100)": float(perf_val) if perf_val is not None else None,
+                                    })
+                                    rows_table.append({
+                                        "Date": s_item.get("date", ""),
+                                        "Type": s_item.get("type", ""),
+                                        "Événement": s_item.get("libelle", ""),
+                                        "Durée (min)": s_item.get("duree_min", 0),
+                                        "RPE": s_item.get("rpe") if s_item.get("rpe") is not None else "-",
+                                        "Charge (UA)": c_ua_val,
+                                        "Forme (/5)": forme_val if forme_val is not None else "-",
+                                        "Indice Perf.": perf_val if perf_val is not None else "-",
+                                        "Note": s_item.get("note", ""),
+                                    })
+
+                                df_courbes = pd.DataFrame(rows_courbes).set_index("Événement")
+                                lc1, lc2 = st.columns(2)
+                                with lc1:
+                                    st.markdown("**⚡ Charge (UA) & Forme (/5)**")
+                                    st.line_chart(df_courbes[[col for col in ["Charge (UA)", "Forme (/5)"] if col in df_courbes.columns]])
+                                with lc2:
+                                    st.markdown("**🏆 Indice de Performance Match (/100)**")
+                                    cols_perf = [c for c in ["Indice Perf. (/100)"] if c in df_courbes.columns and df_courbes[c].notna().any()]
+                                    if cols_perf:
+                                        st.line_chart(df_courbes[cols_perf])
+                                    else:
+                                        st.caption("Aucun indice de performance match disponible sur cette sélection.")
+
+                                st.dataframe(pd.DataFrame(rows_table), use_container_width=True, hide_index=True)
+                            else:
+                                st.info("Aucune donnée longitudinale enregistrée pour ce profil pour le moment.")
+
+                            st.divider()
 
                             zone_filtre_saison_j = st.selectbox(
                                 "📍 Filtrer par zone du terrain (Optionnel)",
@@ -2269,6 +2626,100 @@ def run_staff_app(equipe_assignee):
                 else:
                     st.info("Aucun profil disponible.")
 
+            # --- SOUS-ONGLET 4 : CHARGE, FORME & VIGILANCE ---
+            with sub_tab_charge:
+                st.subheader("🔋 Suivi Longitudinal — Charge Interne (sRPE), ACWR & Forme")
+                st.caption("Charge sRPE = Durée (min) × RPE (1–10) • Ratio ACWR = Charge 7j / Moyenne hebdo 28j • Forme de 1 à 5.")
+
+                resume_lignes = []
+                for j_item in tous_membres_saison:
+                    res_j = resumer_charge_forme_joueur(j_item)
+                    resume_lignes.append({
+                        "N°": j_item.numero,
+                        L["joueur"].capitalize(): j_item.nom,
+                        "Poste": j_item.poste,
+                        "Statut": res_j["statut"],
+                        "Charge 7j (UA)": res_j["charge_7j"],
+                        "Moy. 28j (UA)": res_j["moy_hebdo_28j"],
+                        "ACWR": res_j["acwr"] if res_j["acwr"] is not None else "-",
+                        "Forme Moy. (/5)": res_j["forme_moy"] if res_j["forme_moy"] is not None else "-",
+                        "Dernier RPE": res_j["dernier_rpe"] if res_j["dernier_rpe"] is not None else "-",
+                    })
+
+                if resume_lignes:
+                    st.dataframe(pd.DataFrame(resume_lignes), use_container_width=True, hide_index=True)
+
+                st.divider()
+                peut_saisir_suivi = a_permission("saisie_match") or a_permission("gerer_effectif")
+                if not peut_saisir_suivi:
+                    st.info("🔒 Saisie de séance / forme réservée aux profils habilités (lecture seule).")
+                else:
+                    st.markdown("### ➕ Saisie Rapide Séance / Bilan Forme (Effectif)")
+                    c_ev1, c_ev2, c_ev3 = st.columns([1.4, 1.6, 2])
+                    with c_ev1:
+                        date_seance = st.date_input("Date", value=date.today(), key=f"date_suivi_long_{ctx_prefix}")
+                    with c_ev2:
+                        type_seance = st.selectbox(
+                            "Type d'événement",
+                            ["Séance Collective", "Prépa Physique", "Bilan Forme / Wellness", "Stage / Match Amical"],
+                            key=f"type_suivi_long_{ctx_prefix}",
+                        )
+                    with c_ev3:
+                        libelle_seance = st.text_input(
+                            "Libellé / Contenu",
+                            value=type_seance,
+                            key=f"libelle_suivi_long_{ctx_prefix}",
+                        )
+
+                    lignes_saisie_init = [
+                        {
+                            "Présent": True,
+                            "Nom": j_item.nom,
+                            "Poste": j_item.poste,
+                            "Durée (min)": 0 if type_seance == "Bilan Forme / Wellness" else 75,
+                            "RPE (1-10)": 0.0 if type_seance == "Bilan Forme / Wellness" else 6.0,
+                            "Forme (1-5)": 3.5,
+                            "Note": "",
+                        }
+                        for j_item in tous_membres_saison
+                    ]
+
+                    df_saisie_edit = st.data_editor(
+                        pd.DataFrame(lignes_saisie_init),
+                        column_config={
+                            "Présent": st.column_config.CheckboxColumn(default=True),
+                            "Nom": st.column_config.TextColumn(disabled=True),
+                            "Poste": st.column_config.TextColumn(disabled=True),
+                            "Durée (min)": st.column_config.NumberColumn(min_value=0, max_value=300, step=5),
+                            "RPE (1-10)": st.column_config.NumberColumn(min_value=0.0, max_value=10.0, step=0.5),
+                            "Forme (1-5)": st.column_config.NumberColumn(min_value=1.0, max_value=5.0, step=0.5),
+                            "Note": st.column_config.TextColumn(),
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        key=f"editor_suivi_longitudinal_{ctx_prefix}",
+                    )
+
+                    if st.button("💾 Enregistrer le suivi du groupe", type="primary", key=f"btn_save_suivi_long_{ctx_prefix}"):
+                        nb_enregistres = 0
+                        for _, r_s in df_saisie_edit.iterrows():
+                            if r_s.get("Présent"):
+                                ok = manager.ajouter_entree_longitudinale(
+                                    nom_joueur=r_s.get("Nom"),
+                                    date_str=date_seance.isoformat(),
+                                    type_entree=type_seance,
+                                    duree_min=r_s.get("Durée (min)", 0),
+                                    rpe=r_s.get("RPE (1-10)", 0.0),
+                                    forme=r_s.get("Forme (1-5)", 3.0),
+                                    libelle=libelle_seance,
+                                    performance_score=None,
+                                    note=r_s.get("Note", ""),
+                                )
+                                if ok:
+                                    nb_enregistres += 1
+                        st.success(f"Suivi enregistré pour {nb_enregistres} {L['joueur']}(s).")
+                        st.rerun()
+
     # ==========================================
     # 4. ÉCRAN : GESTION DE L'EFFECTIF
     # ==========================================
@@ -2277,6 +2728,9 @@ def run_staff_app(equipe_assignee):
             aller_a("accueil")
 
         st.header(f"👥 Gestion de l'Effectif ({L['joueurs'].capitalize()}) — {equipe_assignee}")
+        peut_gerer_effectif = a_permission("gerer_effectif")
+        if not peut_gerer_effectif:
+            st.info("🔒 Consultation de l'effectif en lecture seule pour votre profil.")
 
         if manager.joueuses:
             club_equipes = _get_equipes_du_club_courant()
@@ -2284,80 +2738,85 @@ def run_staff_app(equipe_assignee):
 
             for nom, joueuse in list(manager.joueuses.items()):
                 with st.container(border=True):
-                    col_info1, col_info2, col_info3, col_mod, col_transfert, col_suppr = st.columns([2, 1.2, 1, 1.2, 2, 0.8])
+                    if peut_gerer_effectif:
+                        col_info1, col_info2, col_info3, col_mod, col_transfert, col_suppr = st.columns([2, 1.2, 1, 1.2, 2, 0.8])
+                    else:
+                        col_info1, col_info2, col_info3 = st.columns([2.5, 1.5, 1])
 
                     col_info1.write(f"**{nom}**")
                     col_info2.write(f"Poste : {joueuse.poste}")
                     col_info3.write(f"N° {joueuse.numero}")
 
-                    with col_mod:
-                        with st.popover("✏️ Modifier"):
-                            st.markdown(f"**Modifier le profil de {nom}**")
-                            with st.form(key=f"form_modif_joueuse_{ctx_prefix}_{nom}"):
-                                nouveau_nom = st.text_input("Nom / Prénom", value=joueuse.nom)
+                    if peut_gerer_effectif:
+                        with col_mod:
+                            with st.popover("✏️ Modifier"):
+                                st.markdown(f"**Modifier le profil de {nom}**")
+                                with st.form(key=f"form_modif_joueuse_{ctx_prefix}_{nom}"):
+                                    nouveau_nom = st.text_input("Nom / Prénom", value=joueuse.nom)
 
-                                index_poste_actuel = L["postes_possibles"].index(joueuse.poste) if joueuse.poste in L["postes_possibles"] else 0
-                                nouveau_poste = st.selectbox("Poste", L["postes_possibles"], index=index_poste_actuel)
+                                    index_poste_actuel = L["postes_possibles"].index(joueuse.poste) if joueuse.poste in L["postes_possibles"] else 0
+                                    nouveau_poste = st.selectbox("Poste", L["postes_possibles"], index=index_poste_actuel)
 
-                                nouveau_numero = st.number_input("Numéro de maillot", min_value=1, max_value=99, value=int(joueuse.numero))
+                                    nouveau_numero = st.number_input("Numéro de maillot", min_value=1, max_value=99, value=int(joueuse.numero))
 
-                                if st.form_submit_button("Enregistrer les modifications", type="primary", use_container_width=True):
-                                    if not nouveau_nom.strip():
-                                        st.error("Le nom ne peut pas être vide.")
-                                    elif nouveau_nom != nom and nouveau_nom in manager.joueuses:
-                                        st.error(f"Un(e) {L['joueur']} portant le nom '{nouveau_nom}' existe déjà.")
-                                    else:
-                                        joueuse.nom = nouveau_nom.strip()
-                                        joueuse.poste = nouveau_poste
-                                        joueuse.numero = nouveau_numero
+                                    if st.form_submit_button("Enregistrer les modifications", type="primary", use_container_width=True):
+                                        if not nouveau_nom.strip():
+                                            st.error("Le nom ne peut pas être vide.")
+                                        elif nouveau_nom != nom and nouveau_nom in manager.joueuses:
+                                            st.error(f"Un(e) {L['joueur']} portant le nom '{nouveau_nom}' existe déjà.")
+                                        else:
+                                            joueuse.nom = nouveau_nom.strip()
+                                            joueuse.poste = nouveau_poste
+                                            joueuse.numero = nouveau_numero
 
-                                        if joueuse.nom != nom:
-                                            manager.joueuses[joueuse.nom] = joueuse
-                                            del manager.joueuses[nom]
+                                            if joueuse.nom != nom:
+                                                manager.joueuses[joueuse.nom] = joueuse
+                                                del manager.joueuses[nom]
 
-                                        manager.sauvegarder_donnees()
-                                        st.success("Profil mis à jour avec succès !")
-                                        st.rerun()
+                                            manager.sauvegarder_donnees()
+                                            st.success("Profil mis à jour avec succès !")
+                                            st.rerun()
 
-                    with col_transfert:
-                        if autres_equipes_club:
-                            with st.popover("🔄 Transférer"):
-                                st.write(f"Transférer **{nom}** vers :")
-                                equipe_destination = st.selectbox(
-                                    "Équipe cible",
-                                    autres_equipes_club,
-                                    key=f"sel_dest_{ctx_prefix}_{nom}"
-                                )
-                                if st.button("Confirmer le transfert", key=f"btn_conf_trans_{ctx_prefix}_{nom}", type="primary"):
-                                    nom_fichier_cible = get_nom_fichier_equipe(equipe_destination)
-                                    manager_cible = EquipeManager(fichier=nom_fichier_cible, club_slug=club_slug_session)
+                        with col_transfert:
+                            if autres_equipes_club:
+                                with st.popover("🔄 Transférer"):
+                                    st.write(f"Transférer **{nom}** vers :")
+                                    equipe_destination = st.selectbox(
+                                        "Équipe cible",
+                                        autres_equipes_club,
+                                        key=f"sel_dest_{ctx_prefix}_{nom}"
+                                    )
+                                    if st.button("Confirmer le transfert", key=f"btn_conf_trans_{ctx_prefix}_{nom}", type="primary"):
+                                        nom_fichier_cible = get_nom_fichier_equipe(equipe_destination)
+                                        manager_cible = EquipeManager(fichier=nom_fichier_cible, club_slug=club_slug_session)
 
-                                    if nom in manager_cible.joueuses:
-                                        st.error(f"Un(e) {L['joueur']} nommé(e) '{nom}' existe déjà dans {equipe_destination} !")
-                                    else:
-                                        manager_cible.joueuses[nom] = joueuse
-                                        manager_cible.sauvegarder_donnees()
-                                        manager.supprimer_joueuse(nom)
-                                        st.success(f"{nom} a été transféré(e) vers {equipe_destination} avec succès !")
-                                        st.rerun()
-                        else:
-                            st.caption("Aucune autre équipe")
+                                        if nom in manager_cible.joueuses:
+                                            st.error(f"Un(e) {L['joueur']} nommé(e) '{nom}' existe déjà dans {equipe_destination} !")
+                                        else:
+                                            manager_cible.joueuses[nom] = joueuse
+                                            manager_cible.sauvegarder_donnees()
+                                            manager.supprimer_joueuse(nom)
+                                            st.success(f"{nom} a été transféré(e) vers {equipe_destination} avec succès !")
+                                            st.rerun()
+                            else:
+                                st.caption("Aucune autre équipe")
 
-                    with col_suppr:
-                        if st.button("🗑️", key=f"del_{ctx_prefix}_{nom}"):
-                            manager.supprimer_joueuse(nom)
-                            st.rerun()
+                        with col_suppr:
+                            if st.button("🗑️", key=f"del_{ctx_prefix}_{nom}"):
+                                manager.supprimer_joueuse(nom)
+                                st.rerun()
         else:
             st.info(f"Aucun(e) {L['joueur']} enregistré(e).")
 
-        st.divider()
-        with st.form(key=f"form_ajout_joueuse_{ctx_prefix}"):
-            st.markdown(f"##### ➕ Ajouter un(e) nouveau/nouvelle {L['joueur']} à l'effectif")
-            nom_input = st.text_input(f"Nom / Prénom du/de la {L['joueur']}")
-            poste_input = st.selectbox("Poste", L["postes_possibles"])
-            numero_input = st.number_input("Numéro de maillot", min_value=1, max_value=99, value=10)
-            if st.form_submit_button("Ajouter à l'effectif"):
-                if nom_input.strip():
-                    type_j = "gardienne" if "Gardien" in poste_input else "champ"
-                    manager.ajouter_joueuse(nom=nom_input.strip(), poste=poste_input, numero=numero_input, type_joueuse=type_j)
-                    st.rerun()
+        if peut_gerer_effectif:
+            st.divider()
+            with st.form(key=f"form_ajout_joueuse_{ctx_prefix}"):
+                st.markdown(f"##### ➕ Ajouter un(e) nouveau/nouvelle {L['joueur']} à l'effectif")
+                nom_input = st.text_input(f"Nom / Prénom du/de la {L['joueur']}")
+                poste_input = st.selectbox("Poste", L["postes_possibles"])
+                numero_input = st.number_input("Numéro de maillot", min_value=1, max_value=99, value=10)
+                if st.form_submit_button("Ajouter à l'effectif"):
+                    if nom_input.strip():
+                        type_j = "gardienne" if "Gardien" in poste_input else "champ"
+                        manager.ajouter_joueuse(nom=nom_input.strip(), poste=poste_input, numero=numero_input, type_joueuse=type_j)
+                        st.rerun()

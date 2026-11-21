@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 import json
 import os
 import re
@@ -48,7 +49,9 @@ class Joueuse:
         self.numero = int(numero)
         self.cartons_jaunes = 0
         self.exclusions_2min = 0
+        self.cartons_rouges = 0
         self.historique_matchs = []
+        self.suivi_longitudinal = []
 
     def to_dict(self):
         raise NotImplementedError
@@ -95,7 +98,9 @@ class JoueuseDeChamp(Joueuse):
             "pertes_balles_provoquees": self.pertes_balles_provoquees,
             "cartons_jaunes": self.cartons_jaunes,
             "exclusions_2min": self.exclusions_2min,
+            "cartons_rouges": self.cartons_rouges,
             "historique_matchs": self.historique_matchs,
+            "suivi_longitudinal": self.suivi_longitudinal,
         }
 
 
@@ -126,7 +131,9 @@ class Gardienne(Joueuse):
             "tirs": self.tirs,
             "cartons_jaunes": self.cartons_jaunes,
             "exclusions_2min": self.exclusions_2min,
+            "cartons_rouges": self.cartons_rouges,
             "historique_matchs": self.historique_matchs,
+            "suivi_longitudinal": self.suivi_longitudinal,
         }
 
 
@@ -190,7 +197,10 @@ class EquipeManager:
 
                         j.cartons_jaunes = d.get("cartons_jaunes", 0)
                         j.exclusions_2min = d.get("exclusions_2min", 0)
+                        j.cartons_rouges = d.get("cartons_rouges", 0)
                         j.historique_matchs = d.get("historique_matchs", [])
+                        suivi_raw = d.get("suivi_longitudinal", [])
+                        j.suivi_longitudinal = suivi_raw if isinstance(suivi_raw, list) else []
                         self.joueuses[nom] = j
             except Exception as e:
                 print(f"Erreur lors du chargement : {e}")
@@ -268,6 +278,7 @@ class EquipeManager:
                     "balles_provoquees": j.pertes_balles_provoquees,
                     "cartons_jaunes": j.cartons_jaunes,
                     "exclusions_2min": j.exclusions_2min,
+                    "cartons_rouges": j.cartons_rouges,
                 }
             else:
                 match_data = {
@@ -279,12 +290,14 @@ class EquipeManager:
                     "tirs": j.tirs,
                     "cartons_jaunes": j.cartons_jaunes,
                     "exclusions_2min": j.exclusions_2min,
+                    "cartons_rouges": j.cartons_rouges,
                 }
 
             j.historique_matchs.append(match_data)
 
             j.cartons_jaunes = 0
             j.exclusions_2min = 0
+            j.cartons_rouges = 0
             if isinstance(j, JoueuseDeChamp):
                 j.buts = 0
                 j.tirs = 0
@@ -322,6 +335,7 @@ class EquipeManager:
 
                     jp_orig.cartons_jaunes = j_p.cartons_jaunes
                     jp_orig.exclusions_2min = j_p.exclusions_2min
+                    jp_orig.cartons_rouges = getattr(j_p, "cartons_rouges", 0)
                     if isinstance(jp_orig, JoueuseDeChamp):
                         jp_orig.buts = j_p.buts
                         jp_orig.tirs = j_p.tirs
@@ -370,6 +384,7 @@ class EquipeManager:
                             "balles_provoquees": jp_orig.pertes_balles_provoquees,
                             "cartons_jaunes": jp_orig.cartons_jaunes,
                             "exclusions_2min": jp_orig.exclusions_2min,
+                            "cartons_rouges": jp_orig.cartons_rouges,
                         }
                     else:
                         match_data_p = {
@@ -381,9 +396,32 @@ class EquipeManager:
                             "tirs": jp_orig.tirs,
                             "cartons_jaunes": jp_orig.cartons_jaunes,
                             "exclusions_2min": jp_orig.exclusions_2min,
+                            "cartons_rouges": jp_orig.cartons_rouges,
                         }
 
                     jp_orig.historique_matchs.append(match_data_p)
+                    jp_orig.cartons_jaunes = 0
+                    jp_orig.exclusions_2min = 0
+                    jp_orig.cartons_rouges = 0
+                    if isinstance(jp_orig, JoueuseDeChamp):
+                        jp_orig.buts = 0
+                        jp_orig.tirs = 0
+                        jp_orig.passes_decisives = 0
+                        jp_orig.pertes_de_balles_passe = 0
+                        jp_orig.pertes_de_balles_faute = 0
+                        jp_orig.duels_off_gagnes = 0
+                        jp_orig.duels_off_perdus = 0
+                        jp_orig.duels_def_gagnes = 0
+                        jp_orig.duels_def_perdus = 0
+                        jp_orig.neutralisations = 0
+                        jp_orig.interceptions = 0
+                        jp_orig.pertes_balles_provoquees = 0
+                    elif isinstance(jp_orig, Gardienne):
+                        jp_orig.arrets = 0
+                        jp_orig.tirs_subis = 0
+                        jp_orig.buts_encaisses = 0
+                        jp_orig.buts = 0
+                        jp_orig.tirs = 0
                     mgr_orig.sauvegarder_donnees()
 
     def sauvegarder_commentaire_post_match(self, nom_match, texte_bilan):
@@ -424,3 +462,161 @@ class EquipeManager:
             self.supprimer_joueuse(nom_joueuse)
             return True
         return False
+
+    def ajouter_entree_longitudinale(
+        self,
+        nom_joueur,
+        date_str,
+        type_entree="Séance",
+        duree_min=60,
+        rpe=5,
+        forme=3,
+        libelle="",
+        performance_score=None,
+        note="",
+    ):
+        """Ajoute ou met à jour une entrée charge/forme/performance sur un joueur ou une gardienne."""
+        if nom_joueur not in self.joueuses:
+            return False
+
+        j = self.joueuses[nom_joueur]
+        duree_val = max(0, int(duree_min or 0))
+        rpe_val = max(0, min(10, float(rpe if rpe is not None else 0)))
+        forme_val = max(1, min(5, float(forme if forme is not None else 3)))
+        charge_ua = round(duree_val * rpe_val, 1)
+
+        entree = {
+            "date": str(date_str),
+            "type": str(type_entree),
+            "libelle": str(libelle or type_entree),
+            "duree_min": duree_val,
+            "rpe": rpe_val,
+            "charge_ua": charge_ua,
+            "forme": forme_val,
+            "performance_score": round(float(performance_score), 1) if performance_score is not None else None,
+            "note": str(note or ""),
+        }
+
+        if not isinstance(getattr(j, "suivi_longitudinal", None), list):
+            j.suivi_longitudinal = []
+
+        # Remplace si même date + même type + même libellé de match pour éviter les doublons
+        if type_entree == "Match" and libelle:
+            j.suivi_longitudinal = [
+                e for e in j.suivi_longitudinal
+                if not (e.get("type") == "Match" and e.get("libelle") == libelle)
+            ]
+
+        j.suivi_longitudinal.append(entree)
+        j.suivi_longitudinal.sort(key=lambda x: str(x.get("date", "")))
+        self.sauvegarder_donnees()
+        return True
+
+
+def calculer_indice_performance_match(match_dict: dict, est_gardienne: bool = False) -> float:
+    """Calcule un indice de rendement synthétique (0-100) à partir des stats d'un match archivé."""
+    if not isinstance(match_dict, dict):
+        return 0.0
+
+    if est_gardienne:
+        arrets = float(match_dict.get("arrets", 0) or 0)
+        subis = float(match_dict.get("tirs_subis", 0) or 0)
+        buts_g = float(match_dict.get("buts", 0) or 0)
+        cj = float(match_dict.get("cartons_jaunes", 0) or 0)
+        e2 = float(match_dict.get("exclusions_2min", 0) or 0)
+        cr = float(match_dict.get("cartons_rouges", 0) or 0)
+        pct_arr = (arrets / subis * 100.0) if subis > 0 else 0.0
+        score = pct_arr + (buts_g * 3.0) - (cj * 2.0) - (e2 * 4.0) - (cr * 8.0)
+        return round(max(0.0, min(100.0, score)), 1)
+
+    buts = float(match_dict.get("buts", 0) or 0)
+    tirs = float(match_dict.get("tirs", 0) or 0)
+    pd = float(match_dict.get("passes_decisives", 0) or 0)
+    inter = float(match_dict.get("interceptions", 0) or 0)
+    neut = float(match_dict.get("neutralisations", 0) or 0)
+    prov = float(match_dict.get("balles_provoquees", 0) or 0)
+    dog = float(match_dict.get("duels_off_gagnes", 0) or 0)
+    ddg = float(match_dict.get("duels_def_gagnes", 0) or 0)
+    pertes = float(match_dict.get("pertes_passe", 0) or 0) + float(match_dict.get("pertes_faute", 0) or 0)
+    dop = float(match_dict.get("duels_off_perdus", 0) or 0)
+    ddp = float(match_dict.get("duels_def_perdus", 0) or 0)
+    cj = float(match_dict.get("cartons_jaunes", 0) or 0)
+    e2 = float(match_dict.get("exclusions_2min", 0) or 0)
+    cr = float(match_dict.get("cartons_rouges", 0) or 0)
+
+    eff_tirs = (buts / tirs * 100.0) if tirs > 0 else 50.0
+    points_positifs = (buts * 4.0) + (pd * 3.5) + (inter * 2.5) + (neut * 2.0) + (prov * 2.5) + ((dog + ddg) * 1.2)
+    points_negatifs = (pertes * 2.5) + ((dop + ddp) * 1.0) + (cj * 2.0) + (e2 * 4.0) + (cr * 8.0)
+
+    # Base neutre à 50, modulée par le volume/efficacité et le solde d'actions
+    score = 50.0 + ((eff_tirs - 50.0) * 0.25) + (points_positifs - points_negatifs) * 1.5
+    return round(max(0.0, min(100.0, score)), 1)
+
+
+def resumer_charge_forme_joueur(joueur_obj, date_reference: str | None = None) -> dict:
+    """Calcule charge 7j, charge 28j, ratio ACWR, forme moyenne et statut de vigilance."""
+    entrees = list(getattr(joueur_obj, "suivi_longitudinal", []) or [])
+    if not entrees:
+        return {
+            "charge_7j": 0.0,
+            "moy_hebdo_28j": 0.0,
+            "acwr": None,
+            "forme_moy": None,
+            "dernier_rpe": None,
+            "statut": "⚪ Sans donnée",
+        }
+
+    try:
+        dt_ref = datetime.strptime(str(date_reference), "%Y-%m-%d").date() if date_reference else datetime.now().date()
+    except ValueError:
+        dt_ref = datetime.now().date()
+
+    seuil_7j = dt_ref - timedelta(days=7)
+    seuil_28j = dt_ref - timedelta(days=28)
+
+    charge_7j = 0.0
+    charge_28j = 0.0
+    formes_recentes = []
+    dernier_rpe = None
+
+    for e in sorted(entrees, key=lambda x: str(x.get("date", ""))):
+        d_str = str(e.get("date", ""))[:10]
+        try:
+            d_val = datetime.strptime(d_str, "%Y-%m-%d").date()
+        except ValueError:
+            d_val = dt_ref
+
+        c_ua = float(e.get("charge_ua") or (float(e.get("duree_min", 0) or 0) * float(e.get("rpe", 0) or 0)))
+        if seuil_28j <= d_val <= dt_ref:
+            charge_28j += c_ua
+        if seuil_7j <= d_val <= dt_ref:
+            charge_7j += c_ua
+            if e.get("forme") is not None:
+                formes_recentes.append(float(e.get("forme")))
+        if e.get("rpe") is not None:
+            dernier_rpe = float(e.get("rpe"))
+
+    moy_hebdo_28j = round(charge_28j / 4.0, 1)
+    acwr = round(charge_7j / moy_hebdo_28j, 2) if moy_hebdo_28j > 0 else None
+
+    if not formes_recentes:
+        all_formes = [float(e.get("forme")) for e in entrees if e.get("forme") is not None]
+        formes_recentes = all_formes[-5:]
+
+    forme_moy = round(sum(formes_recentes) / len(formes_recentes), 1) if formes_recentes else None
+
+    if (acwr is not None and acwr > 1.5) or (forme_moy is not None and forme_moy <= 2.0):
+        statut = "🔴 Vigilance / Charge"
+    elif (acwr is not None and (acwr < 0.7 or acwr > 1.3)) or (forme_moy is not None and forme_moy < 3.0):
+        statut = "🟠 À surveiller"
+    else:
+        statut = "🟢 Optimal"
+
+    return {
+        "charge_7j": round(charge_7j, 1),
+        "moy_hebdo_28j": moy_hebdo_28j,
+        "acwr": acwr,
+        "forme_moy": forme_moy,
+        "dernier_rpe": dernier_rpe,
+        "statut": statut,
+    }

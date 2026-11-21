@@ -3,11 +3,19 @@ import pandas as pd
 import os
 import zipfile
 import io
-from auth_manager import afficher_en_tete_avec_profil, sauvegarder_registre
+from auth_manager import (
+    LIBELLES_PERMISSIONS,
+    PERMISSIONS_DEFAUT_PAR_ROLE,
+    afficher_en_tete_avec_profil,
+    hasher_mot_de_passe,
+    obtenir_permissions_utilisateur,
+    sauvegarder_registre,
+)
 from hand_manager import (
     EquipeManager,
     get_dossier_club,
     get_nom_fichier_equipe,
+    resumer_charge_forme_joueur,
 )
 from rapport_club_pdf import generer_pdf_bilan_global
 
@@ -166,6 +174,36 @@ def afficher_espace_manager():
             df_synthese = pd.DataFrame(synthese_data).set_index("Équipe")
             st.bar_chart(df_synthese[["Moy. Buts / Match"]])
 
+        st.markdown("---")
+        st.markdown("### ⚠️ Vigilance Charge & Forme du Club")
+        alertes_club = []
+        for eq in equipes:
+            nom_f_eq = get_nom_fichier_equipe(eq)
+            try:
+                mgr_eq_suivi = EquipeManager(fichier=nom_f_eq, club_slug=club_slug)
+            except Exception:
+                continue
+
+            for j_nom, j_obj in mgr_eq_suivi.joueuses.items():
+                res_s = resumer_charge_forme_joueur(j_obj)
+                if res_s["statut"] != "⚪ Sans donnée":
+                    alertes_club.append({
+                        "Équipe": eq,
+                        "Joueur / Joueuse": j_nom,
+                        "Poste": j_obj.poste,
+                        "Statut": res_s["statut"],
+                        "Charge 7j (UA)": res_s["charge_7j"],
+                        "ACWR": res_s["acwr"] if res_s["acwr"] is not None else "-",
+                        "Forme Moy. (/5)": res_s["forme_moy"] if res_s["forme_moy"] is not None else "-",
+                    })
+
+        if alertes_club:
+            ordre_priorite = {"🔴 Vigilance / Charge": 0, "🟠 À surveiller": 1, "🟢 Optimal": 2}
+            alertes_club.sort(key=lambda r: (ordre_priorite.get(r["Statut"], 9), r["Équipe"], r["Joueur / Joueuse"]))
+            st.dataframe(pd.DataFrame(alertes_club), use_container_width=True, hide_index=True)
+        else:
+            st.caption("📌 Aucune donnée longitudinale de charge ou de forme enregistrée sur les équipes du club pour le moment.")
+
     # --- ONGLET 2 : GESTION DES ÉQUIPES (AJOUT & SUPPRESSION) ---
     with tab_equipes:
         st.subheader("🛡️ Gestion des Équipes du Club")
@@ -212,25 +250,67 @@ def afficher_espace_manager():
                 else:
                     st.error("Nom d'équipe invalide ou déjà existant.")
 
-    # --- ONGLET 3 : GESTION DES STAFFS (ENCLOISONNÉ AU CLUB) ---
+    # --- ONGLET 3 : GESTION DES STAFFS & PERMISSIONS (ENCLOISONNÉ AU CLUB) ---
     with tab_staffs:
-        st.subheader("👥 Gestion des profils Staff et Entraîneurs")
+        st.subheader("👥 Gestion des profils Staff, Analystes & Permissions")
 
         users_dict = reg.get("users", st.session_state.users_db)
-        staffs_existants = [
+        membres_club = [
             uname
             for uname, data in users_dict.items()
-            if data.get("role") == "staff" and data.get("club") == club_actuel
+            if data.get("role") in ("staff", "analyste") and data.get("club") == club_actuel
         ]
+        equipes_dispos = st.session_state.get("club_equipes", [])
 
-        if staffs_existants:
-            st.markdown("### 🗑️ Révoquer un accès staff")
+        if membres_club:
+            st.markdown("### 🔐 Modifier les catégories/équipes et permissions d'un membre")
+            membre_cible = st.selectbox(
+                "Sélectionner un membre du club",
+                membres_club,
+                format_func=lambda x: f"{users_dict[x]['nom']} ({x}) — Rôle : {users_dict[x].get('role')}",
+                key="select_edit_membre_club",
+            )
+            m_data = users_dict[membre_cible]
+            m_perms = obtenir_permissions_utilisateur(m_data)
+            eq_actuelles_valides = [eq for eq in m_data.get("equipes", []) if eq in equipes_dispos]
+
+            with st.form(f"form_edit_permissions_{membre_cible}"):
+                role_edit = st.selectbox(
+                    "Rôle",
+                    ["staff", "analyste"],
+                    index=0 if m_data.get("role") == "staff" else 1,
+                )
+                equipes_edit = st.multiselect(
+                    "Équipes / Catégories autorisées",
+                    equipes_dispos,
+                    default=eq_actuelles_valides,
+                )
+                st.markdown("**Permissions détaillées :**")
+                perms_edit = {}
+                p_cols = st.columns(2)
+                for idx_p, (p_key, p_label) in enumerate(LIBELLES_PERMISSIONS.items()):
+                    with p_cols[idx_p % 2]:
+                        perms_edit[p_key] = st.checkbox(
+                            p_label,
+                            value=bool(m_perms.get(p_key, False)),
+                            key=f"chk_perm_edit_{membre_cible}_{p_key}",
+                        )
+
+                if st.form_submit_button("💾 Enregistrer les droits et équipes", type="primary"):
+                    m_data["role"] = role_edit
+                    m_data["equipes"] = equipes_edit
+                    m_data["permissions"] = perms_edit
+                    sauvegarder_registre(reg)
+                    st.success(f"Droits et équipes mis à jour pour {m_data['nom']} ({membre_cible}).")
+                    st.rerun()
+
+            st.markdown("### 🗑️ Révoquer un accès")
             with st.form("form_supprimer_staff"):
                 staff_a_supprimer = st.selectbox(
-                    "Sélectionner l'identifiant du staff à supprimer",
-                    staffs_existants,
+                    "Sélectionner l'identifiant à révoquer",
+                    membres_club,
                     format_func=lambda x: (
-                        f"{users_dict[x]['nom']} (ID: {x} - Équipes: "
+                        f"{users_dict[x]['nom']} (ID: {x} [{users_dict[x].get('role')}] - Équipes: "
                         f"{', '.join(users_dict[x].get('equipes', []))})"
                     ),
                 )
@@ -246,36 +326,49 @@ def afficher_espace_manager():
         st.markdown("---")
 
         with st.form("form_create_staff_admin"):
-            st.subheader("➕ Nouveau compte Staff / Entraîneur")
+            st.subheader("➕ Nouveau compte Staff / Analyste")
             col1, col2 = st.columns(2)
             with col1:
                 new_username = st.text_input("Identifiant de connexion (ex: thomas_seniors)").strip().lower()
                 new_password = st.text_input("Mot de passe", type="password")
+                new_role = st.selectbox("Rôle", ["staff", "analyste"])
             with col2:
-                new_nom = st.text_input("Nom / Prénom du coach")
-                equipes_dispos = st.session_state.get("club_equipes", [])
-                new_equipes = st.multiselect("Équipes assignées (Multi-équipe)", equipes_dispos)
+                new_nom = st.text_input("Nom / Prénom")
+                new_equipes = st.multiselect("Équipes / Catégories assignées", equipes_dispos)
 
-            submit_staff = st.form_submit_button("Créer l'accès staff")
+            st.markdown("**Permissions initiales :**")
+            new_perms = {}
+            n_cols = st.columns(2)
+            for idx_p, (p_key, p_label) in enumerate(LIBELLES_PERMISSIONS.items()):
+                default_val = PERMISSIONS_DEFAUT_PAR_ROLE["staff"][p_key]
+                with n_cols[idx_p % 2]:
+                    new_perms[p_key] = st.checkbox(
+                        p_label,
+                        value=default_val,
+                        key=f"chk_perm_new_{p_key}",
+                    )
+
+            submit_staff = st.form_submit_button("Créer l'accès")
             if submit_staff:
                 identifiants_existants = {k.strip().lower() for k in users_dict.keys()}
                 if not new_username or not new_password or not new_nom.strip():
-                    st.error("Veuillez remplir l'identifiant, le mot de passe et le nom du coach.")
+                    st.error("Veuillez remplir l'identifiant, le mot de passe et le nom.")
                 elif " " in new_username:
                     st.error("L'identifiant ne peut pas contenir d'espaces.")
                 elif new_username in identifiants_existants:
                     st.error("Désolé, cet identifiant est déjà attribué à un autre compte.")
                 else:
                     users_dict[new_username] = {
-                        "password": new_password,
-                        "role": "staff",
+                        "password": hasher_mot_de_passe(new_password),
+                        "role": new_role,
                         "nom": new_nom.strip(),
                         "club": club_actuel,
                         "equipes": new_equipes,
+                        "permissions": new_perms,
                     }
                     sauvegarder_registre(reg)
                     st.success(
-                        f"Compte staff créé pour **{new_nom}** assigné aux équipes : **{', '.join(new_equipes)}** !"
+                        f"Compte {new_role} créé pour **{new_nom}** assigné aux équipes : **{', '.join(new_equipes)}** !"
                     )
                     st.rerun()
 

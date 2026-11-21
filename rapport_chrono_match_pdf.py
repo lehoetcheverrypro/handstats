@@ -83,8 +83,12 @@ def _style_ligne_action(type_action):
         return colors.HexColor("#FEF2F2"), "#B91C1C"
     elif "but" in act_low or "arrêt" in act_low or "gagné" in act_low or "interception" in act_low or "provoquée" in act_low or "passe décisive" in act_low or "neutralisation" in act_low:
         return colors.HexColor("#F0FDF4"), "#15803D"
+    elif "rouge" in act_low:
+        return colors.HexColor("#FEE2E2"), "#991B1B"
     elif "jaune" in act_low or "2min" in act_low or "exclusion" in act_low:
         return colors.HexColor("#FFFBEB"), "#B45309"
+    elif "temps mort" in act_low:
+        return colors.HexColor("#F3E8FF"), "#6B21A8"
     elif "attaque adverse" in act_low:
         return colors.HexColor("#EFF6FF"), "#1D4ED8"
     elif "repère mi-temps" in act_low:
@@ -272,7 +276,48 @@ def generer_pdf_chronologique(
     story.append(KeepTogether(tactique_elements))
     story.append(Spacer(1, 8))
 
-    # 4. OBSERVATIONS & FAITS MARQUANTS EN DIRECT (NOTES DU BANC)
+    # 4. TEMPS MORTS & CARTONS ROUGES (MOMENTS CLÉS)
+    evenements_cles = [
+        act for act in (historique_actions or [])
+        if "temps mort" in str(act.get("type_action", "")).lower()
+        or "rouge" in str(act.get("type_action", "")).lower()
+    ]
+
+    if evenements_cles:
+        cles_elements = [
+            Paragraph("TEMPS MORTS & CARTONS ROUGES (MOMENTS CLÉS)", section_header_style)
+        ]
+        cles_data = [[
+            Paragraph("Moment", table_header_style),
+            Paragraph("Événement", table_header_style),
+            Paragraph(col_detail_libelle, table_header_style),
+        ]]
+        for ev in evenements_cles:
+            t_ev = str(ev.get("type_action", ""))
+            bg_ev, hex_ev = _style_ligne_action(t_ev)
+            cles_data.append([
+                Paragraph(_formater_horodatage(ev), ParagraphStyle('CleHorodatage', parent=bold_center_style, leading=10.5)),
+                Paragraph(f"<font color='{hex_ev}'><b>{t_ev}</b></font>", normal_style),
+                Paragraph(ev.get("details", ""), normal_style),
+            ])
+        t_cles = Table(cles_data, colWidths=[75, 165, 270], repeatRows=1)
+        cles_style = [
+            ('BACKGROUND', (0, 0), (-1, 0), slate_dark),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 0.4, border_grey),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ]
+        for idx_ev, ev in enumerate(evenements_cles, start=1):
+            bg_ev, _ = _style_ligne_action(str(ev.get("type_action", "")))
+            cles_style.append(('BACKGROUND', (0, idx_ev), (-1, idx_ev), bg_ev))
+        t_cles.setStyle(TableStyle(cles_style))
+        cles_elements.append(t_cles)
+        story.append(KeepTogether(cles_elements))
+        story.append(Spacer(1, 8))
+
+    # 5. OBSERVATIONS & FAITS MARQUANTS EN DIRECT (NOTES DU BANC)
     notes_elements = [
         Paragraph("3. OBSERVATIONS & FAITS MARQUANTS EN DIRECT (NOTES DU BANC)", section_header_style)
     ]

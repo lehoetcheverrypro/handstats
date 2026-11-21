@@ -1,9 +1,92 @@
+import hashlib
+import hmac
 import json
 import os
 import re
-import streamlit as st
+import secrets
+import shutil
 import streamlit as st
 from hand_manager import supprimer_dossier_club
+
+PERMISSIONS_DEFAUT_PAR_ROLE = {
+    "super_admin": {
+        "saisie_match": True,
+        "gerer_effectif": True,
+        "supprimer_archive": True,
+        "exports": True,
+    },
+    "manager": {
+        "saisie_match": True,
+        "gerer_effectif": True,
+        "supprimer_archive": True,
+        "exports": True,
+    },
+    "staff": {
+        "saisie_match": True,
+        "gerer_effectif": True,
+        "supprimer_archive": False,
+        "exports": True,
+    },
+    "analyste": {
+        "saisie_match": False,
+        "gerer_effectif": False,
+        "supprimer_archive": False,
+        "exports": True,
+    },
+}
+
+LIBELLES_PERMISSIONS = {
+    "saisie_match": "Saisie & clôture de match en direct",
+    "gerer_effectif": "Gestion & transfert de l'effectif",
+    "supprimer_archive": "Suppression de matchs archivés",
+    "exports": "Exports (PDF, CSV, JSON)",
+}
+
+
+def hasher_mot_de_passe(mot_de_passe: str) -> str:
+    sel = secrets.token_hex(16)
+    derive = hashlib.pbkdf2_hmac("sha256", mot_de_passe.encode("utf-8"), sel.encode("utf-8"), 120_000).hex()
+    return f"pbkdf2${sel}${derive}"
+
+
+def verifier_mot_de_passe(mot_de_passe_saisi: str, mot_de_passe_stocke: str) -> tuple[bool, bool]:
+    """Retourne (est_valide, doit_etre_migre)."""
+    if not isinstance(mot_de_passe_stocke, str) or not mot_de_passe_stocke:
+        return False, False
+    if mot_de_passe_stocke.startswith("pbkdf2$"):
+        parts = mot_de_passe_stocke.split("$", 2)
+        if len(parts) != 3:
+            return False, False
+        _, sel, hash_attendu = parts
+        calcul = hashlib.pbkdf2_hmac(
+            "sha256", mot_de_passe_saisi.encode("utf-8"), sel.encode("utf-8"), 120_000
+        ).hex()
+        return hmac.compare_digest(calcul, hash_attendu), False
+    # Compatibilité rétroactive avec mots de passe en clair existants
+    valide = hmac.compare_digest(mot_de_passe_saisi, mot_de_passe_stocke)
+    return valide, valide
+
+
+def obtenir_permissions_utilisateur(user_info: dict) -> dict:
+    role = user_info.get("role", "staff")
+    base = dict(PERMISSIONS_DEFAUT_PAR_ROLE.get(role, PERMISSIONS_DEFAUT_PAR_ROLE["staff"]))
+    custom = user_info.get("permissions")
+    if isinstance(custom, dict):
+        for cle, val in custom.items():
+            if cle in base:
+                base[cle] = bool(val)
+    return base
+
+
+def a_permission(permission_key: str) -> bool:
+    session = st.session_state.get("user_session", {})
+    if not session.get("logged_in"):
+        return False
+    role = session.get("role")
+    if role in ("super_admin", "manager"):
+        return True
+    perms = session.get("permissions") or {}
+    return bool(perms.get(permission_key, False))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 REGISTRY_FILE = os.path.join(BASE_DIR, "clubs_registry.json")
@@ -26,32 +109,36 @@ def _default_registry() -> dict:
         },
         "users": {
             "super_admin": {
-                "password": "#Lgan64290",
+                "password": hasher_mot_de_passe("#Lgan64290"),
                 "role": "super_admin",
                 "nom": "Super Admin Plateforme",
                 "club": None,
                 "equipes": [],
+                "permissions": dict(PERMISSIONS_DEFAUT_PAR_ROLE["super_admin"]),
             },
             "admin": {
-                "password": "123",
+                "password": hasher_mot_de_passe("123"),
                 "role": "manager",
                 "nom": "Direction du Club",
                 "club": "Bordeaux Étudiants Club",
                 "equipes": [],
+                "permissions": dict(PERMISSIONS_DEFAUT_PAR_ROLE["manager"]),
             },
             "leho": {
-                "password": "123",
+                "password": hasher_mot_de_passe("123"),
                 "role": "staff",
                 "nom": "Lého",
                 "club": "Bordeaux Étudiants Club",
                 "equipes": ["Séniors M", "Séniors F"],
+                "permissions": dict(PERMISSIONS_DEFAUT_PAR_ROLE["staff"]),
             },
             "coach_f": {
-                "password": "123",
+                "password": hasher_mot_de_passe("123"),
                 "role": "staff",
                 "nom": "Marc",
                 "club": "Bordeaux Étudiants Club",
                 "equipes": ["-18M"],
+                "permissions": dict(PERMISSIONS_DEFAUT_PAR_ROLE["staff"]),
             },
         },
     }
@@ -91,6 +178,7 @@ def _session_vide() -> dict:
         "club_slug": None,
         "equipes": [],
         "equipe_active": None,
+        "permissions": {},
     }
 
 
@@ -128,9 +216,16 @@ def ecran_connexion():
             clubs = reg["clubs"]
 
             matched_username = next((k for k in users.keys() if k.strip().lower() == username), None)
-            if matched_username and users[matched_username]["password"] == password:
+            mot_de_passe_db = users[matched_username].get("password", "") if matched_username else ""
+            mdp_valide, doit_migrer = verifier_mot_de_passe(password, mot_de_passe_db) if matched_username else (False, False)
+
+            if matched_username and mdp_valide:
                 username = matched_username
                 user_info = users[username]
+                if doit_migrer:
+                    user_info["password"] = hasher_mot_de_passe(password)
+                    sauvegarder_registre(reg)
+
                 role = user_info["role"]
                 club_nom = user_info.get("club")
 
@@ -143,9 +238,11 @@ def ecran_connexion():
                         return
 
                 equipes_liste = user_info.get("equipes", [])
-                if role == "staff" and club_nom in clubs:
+                if role in ("staff", "analyste") and club_nom in clubs:
                     equipes_club = clubs[club_nom].get("equipes", [])
                     equipes_liste = [eq for eq in equipes_liste if eq in equipes_club]
+
+                perms_effectives = obtenir_permissions_utilisateur(user_info)
 
                 st.session_state.user_session = {
                     "logged_in": True,
@@ -155,8 +252,10 @@ def ecran_connexion():
                     "club": club_nom,
                     "club_slug": slugify_club(club_nom) if club_nom else None,
                     "equipes": equipes_liste,
-                    "equipe_active": equipes_liste[0] if (role == "staff" and len(equipes_liste) == 1) else None,
+                    "equipe_active": equipes_liste[0] if (role in ("staff", "analyste") and len(equipes_liste) == 1) else None,
+                    "permissions": perms_effectives,
                 }
+
                 if club_nom in clubs:
                     st.session_state.club_equipes = clubs[club_nom].get("equipes", [])
 
@@ -227,7 +326,7 @@ def afficher_en_tete_avec_profil(titre_principal):
                         uname = session["username"]
                         reg = st.session_state.registre_app
                         if uname in reg["users"]:
-                            reg["users"][uname]["password"] = nouveau_mdp
+                            reg["users"][uname]["password"] = hasher_mot_de_passe(nouveau_mdp)
                             sauvegarder_registre(reg)
                             st.success("Mot de passe mis à jour avec succès !")
                     else:
