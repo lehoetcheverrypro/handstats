@@ -8,6 +8,7 @@ from auth_manager import (
 )
 from manager_app import afficher_espace_manager
 from staff_app import run_staff_app
+from sauvegarde_super_admin import afficher_bloc_super_admin
 
 st.set_page_config(
     page_title="HandStats Pro — Portail Central",
@@ -29,6 +30,11 @@ else:
 
     if role == "super_admin":
         afficher_espace_super_admin()
+        st.divider()
+        afficher_bloc_super_admin(
+            manager=st.session_state.get("equipe_manager"),
+            dossier_logos=None,
+        )
 
     elif role == "manager":
         club_nom = session.get("club")

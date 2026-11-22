@@ -34,6 +34,7 @@ from parametres_app import (
     libelle_avec_raccourci,
 )
 
+
 def _action_concerne_joueur(act: dict, joueur) -> bool:
     """Retourne True si l'action concerne le joueur ciblé, quel que soit son numéro de match."""
     nom_cible = (getattr(joueur, "nom", "") or "").strip()
