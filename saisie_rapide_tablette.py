@@ -74,7 +74,8 @@ def _injecter_css_tablette_plein_ecran():
 
         /* Bandeau joueur actif */
         .tab-focus-banner {
-            background-color: #f1f5f9;
+            background-color: #121620;
+            border: 1px solid #273043;
             border-left: 5px solid #0284c7;
             border-radius: 8px;
             padding: 8px 12px;
@@ -82,7 +83,7 @@ def _injecter_css_tablette_plein_ecran():
             display: flex;
             justify-content: space-between;
             align-items: center;
-            color: #0f172a;
+            color: #f8fafc;
         }
         </style>
         """,
@@ -93,7 +94,7 @@ def _injecter_css_tablette_plein_ecran():
 def _injecter_raccourcis_clavier(actif: bool = True, prefix: str = "", keymap: dict | None = None):
     """
     Écoute les raccourcis clavier personnalisés sur le document parent (hors champs de saisie)
-    et déclenche le bouton correspondant dans l'interface.
+    et déclenche le bouton correspondant dans l'interface avec protection anti-rebond.
     """
     actif_js = "true" if actif else "false"
     prefix_js = prefix.replace("\\", "\\\\").replace("'", "\\'")
@@ -176,8 +177,9 @@ def _injecter_raccourcis_clavier(actif: bool = True, prefix: str = "", keymap: d
                     return;
                 }}
 
-                if (activeEl && typeof activeEl.blur === 'function') {{
-                    activeEl.blur();
+                const now = Date.now();
+                if (now - (parentWin.__handstatLastKeyTs || 0) < 120) {{
+                    return;
                 }}
 
                 const key = e.key.toLowerCase();
@@ -187,41 +189,60 @@ def _injecter_raccourcis_clavier(actif: bool = True, prefix: str = "", keymap: d
                     const idx = parseInt(key, 10) - 1;
                     if (cliquerJoueurTerrain(idx)) {{
                         e.preventDefault();
+                        parentWin.__handstatLastKeyTs = now;
+                        if (activeEl && typeof activeEl.blur === 'function') activeEl.blur();
                     }}
                     return;
                 }}
 
-                if (key === (km.chrono || ' ')) {{
+                const chronoKey = (km.chrono || ' ').toLowerCase();
+                if (key === chronoKey) {{
+                    e.preventDefault();
                     if (cliquerBoutonParTexte(['Pause', 'Chrono'])) {{
-                        e.preventDefault();
+                        parentWin.__handstatLastKeyTs = now;
+                        if (activeEl && typeof activeEl.blur === 'function') activeEl.blur();
                     }}
-                }} else if (key === (km.annuler || 'z')) {{
+                }} else if (key === (km.annuler || 'z').toLowerCase()) {{
                     if (cliquerBoutonParTexte(['Annuler'])) {{
                         e.preventDefault();
+                        parentWin.__handstatLastKeyTs = now;
+                        if (activeEl && typeof activeEl.blur === 'function') activeEl.blur();
                     }}
-                }} else if (key === (km.but_arret || 'b')) {{
+                }} else if (key === (km.but_arret || 'b').toLowerCase()) {{
                     if (cliquerBoutonParTexte(['+1 BUT', 'ARRÊT DÉCISIF'])) {{
                         e.preventDefault();
+                        parentWin.__handstatLastKeyTs = now;
+                        if (activeEl && typeof activeEl.blur === 'function') activeEl.blur();
                     }}
-                }} else if (key === (km.rate_encaisse || 'm')) {{
+                }} else if (key === (km.rate_encaisse || 'm').toLowerCase()) {{
                     if (cliquerBoutonParTexte(['TIR RATÉ', 'BUT ENCAISSÉ'])) {{
                         e.preventDefault();
+                        parentWin.__handstatLastKeyTs = now;
+                        if (activeEl && typeof activeEl.blur === 'function') activeEl.blur();
                     }}
-                }} else if (key === (km.passe_decisive || 'p')) {{
+                }} else if (key === (km.passe_decisive || 'p').toLowerCase()) {{
                     if (cliquerBoutonParTexte(['Passe Décisive'])) {{
                         e.preventDefault();
+                        parentWin.__handstatLastKeyTs = now;
+                        if (activeEl && typeof activeEl.blur === 'function') activeEl.blur();
                     }}
-                }} else if (key === (km.perte_passe || 'e')) {{
+                }} else if (key === (km.perte_passe || 'e').toLowerCase()) {{
                     if (cliquerBoutonParTexte(['Perte (Passe)'])) {{
                         e.preventDefault();
+                        parentWin.__handstatLastKeyTs = now;
+                        if (activeEl && typeof activeEl.blur === 'function') activeEl.blur();
                     }}
-                }} else if (key === (km.perte_faute || 'f')) {{
+                }} else if (key === (km.perte_faute || 'f').toLowerCase()) {{
                     if (cliquerBoutonParTexte(['Perte (Faute)'])) {{
                         e.preventDefault();
+                        parentWin.__handstatLastKeyTs = now;
+                        if (activeEl && typeof activeEl.blur === 'function') activeEl.blur();
                     }}
-                }} else if (key === (km.interception || 'i')) {{
+                }} else if (key === (km.interception || 'i').toLowerCase()) {{
                     if (cliquerBoutonParTexte(['Interception'])) {{
                         e.preventDefault();
+                        parentWin.__handstatLastKeyTs = now;
+                        if (activeEl && typeof activeEl.blur === 'function') activeEl.blur();
                     }}
                 }}
             }};
@@ -406,10 +427,10 @@ def afficher_cockpit_tablette_plein_ecran(
         f"""
         <div class="tab-focus-banner">
             <div>
-                <span style="font-size: 18px; font-weight: 800;">#{num_actif} {p_obj.nom}</span>
-                <span style="font-size: 13px; color: #475569; margin-left: 8px;">({p_obj.poste})</span>
+                <span style="font-size: 18px; font-weight: 800; color: #ffffff;">#{num_actif} {p_obj.nom}</span>
+                <span style="font-size: 13px; color: #94a3b8; margin-left: 8px;">({p_obj.poste})</span>
             </div>
-            <div style="font-size: 14px; font-weight: 700; color: #0f172a;">{resume_stat}</div>
+            <div style="font-size: 14px; font-weight: 700; color: #38bdf8;">{resume_stat}</div>
         </div>
         """,
         unsafe_allow_html=True,

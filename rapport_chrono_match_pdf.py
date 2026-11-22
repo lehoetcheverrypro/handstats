@@ -25,8 +25,10 @@ def _resoudre_logo_club(dossier_club=None):
         candidat_club = os.path.join(dossier_club, "logo_club.png")
         if os.path.exists(candidat_club):
             return candidat_club
-    if os.path.exists("logo_club.png"):
-        return "logo_club.png"
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    fallback_local = os.path.join(base_dir, "logo_club.png")
+    if os.path.exists(fallback_local):
+        return fallback_local
     return None
 
 

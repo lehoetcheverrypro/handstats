@@ -34,6 +34,18 @@ from parametres_app import (
     libelle_avec_raccourci,
 )
 
+def _action_concerne_joueur(act: dict, joueur) -> bool:
+    """Retourne True si l'action concerne le joueur ciblé, quel que soit son numéro de match."""
+    nom_cible = (getattr(joueur, "nom", "") or "").strip()
+    if not nom_cible:
+        return False
+
+    membre_nom = (act.get("membre_nom") or "").strip()
+    if membre_nom:
+        return membre_nom == nom_cible
+
+    det = str(act.get("details", "") or "")
+    return f" {nom_cible}" in det or det.endswith(nom_cible) or (nom_cible in det)
 
 def run_staff_app(equipe_assignee):
     # --- CONTRÔLE D'ENCLOISONNEMENT PAR CLUB ---
@@ -1698,7 +1710,7 @@ def run_staff_app(equipe_assignee):
                                         c_2min = st.number_input("Exclusions 2min", min_value=0, value=getattr(p_corr, 'exclusions_2min', 0))
                                         c_rouge = st.number_input("Cartons rouges", min_value=0, value=getattr(p_corr, 'cartons_rouges', 0))
 
-                                    if st.form_submit_button("Valider la correction", type="primary", use_container_width=True):
+                                    if st.form_submit_button("Valider la correction", type="primary", use_container_width=True, key=f"btn_val_corr_champ_{ctx_prefix}_{p_corr.nom}"):
                                         p_corr.buts = c_buts
                                         p_corr.tirs = c_tirs
                                         p_corr.passes_decisives = c_pd
@@ -1731,7 +1743,7 @@ def run_staff_app(equipe_assignee):
                                         c_2min = st.number_input("Exclusions 2min", min_value=0, value=getattr(p_corr, 'exclusions_2min', 0))
                                         c_rouge = st.number_input("Cartons rouges", min_value=0, value=getattr(p_corr, 'cartons_rouges', 0))
 
-                                    if st.form_submit_button("Valider la correction", type="primary", use_container_width=True):
+                                    if st.form_submit_button("Valider la correction", type="primary", use_container_width=True, key=f"btn_val_corr_gard_{ctx_prefix}_{p_corr.nom}"):
                                         p_corr.arrets = c_arrets
                                         p_corr.tirs_subis = c_subis
                                         p_corr.buts_encaisses = c_encaisses
@@ -2140,7 +2152,7 @@ def run_staff_app(equipe_assignee):
 
                                     nom_trouve = None
                                     for nom_j in infos_joueuses_total.keys():
-                                        if nom_j in det:
+                                        if _action_concerne_joueur(act, type("JoueuseRef", (), {"nom": nom_j})()):
                                             nom_trouve = nom_j
                                             break
 
@@ -2310,7 +2322,7 @@ def run_staff_app(equipe_assignee):
                             for act in m.get("journal_actions", []):
                                 det = act.get("details", "")
                                 act_type = act.get("type_action", "")
-                                if f"#{j.numero} {j.nom}" in det and "Cage: " in det:
+                                if _action_concerne_joueur(act, j) and "Cage: " in det:
                                     try:
                                         z_ter_ext = "Inconnue"
                                         z_cage_ext = ""
@@ -2326,16 +2338,16 @@ def run_staff_app(equipe_assignee):
                                         est_gardienne_val = isinstance(j, Gardienne) or "gardien" in j.poste.lower()
                                         cible = agregat_saison_gard_eq if est_gardienne_val else agregat_saison_tirs_eq
 
-                                        if z_cage_ext not in cible:
-                                            cible[z_cage_ext] = {"succes": 0, "echec": 0}
-
                                         if not z_cage_ext or z_cage_ext == "Non précisée":
                                             continue
 
+                                        if z_cage_ext not in cible:
+                                            cible[z_cage_ext] = {"succes": 0, "echec": 0}
+
                                         if not est_gardienne_val:
-                                            if act_type == "But":
+                                            if act_type == "But" or act_type.startswith("But ("):
                                                 cible[z_cage_ext]["succes"] += 1
-                                            elif act_type == "Tir raté":
+                                            elif act_type == "Tir raté" or act_type.startswith("Tir raté ("):
                                                 cible[z_cage_ext]["echec"] += 1
                                         else:
                                             if act_type == "Arrêt décisif":
@@ -2605,7 +2617,7 @@ def run_staff_app(equipe_assignee):
                                 for act in m.get("journal_actions", []):
                                     det = act.get("details", "")
                                     act_type = act.get("type_action", "")
-                                    if f"#{p.numero} {p.nom}" in det and "Cage: " in det:
+                                    if _action_concerne_joueur(act, p) and "Cage: " in det:
                                         try:
                                             z_ter_ext = "Inconnue"
                                             z_cage_ext = ""
@@ -2675,7 +2687,7 @@ def run_staff_app(equipe_assignee):
                                 for act in match_donnees_specifiques.get("journal_actions", []):
                                     det = act.get("details", "")
                                     act_type = act.get("type_action", "")
-                                    if f"#{p.numero} {p.nom}" in det and "Cage: " in det:
+                                    if _action_concerne_joueur(act, p) and "Cage: " in det:
                                         try:
                                             z_ter_ext = "Inconnue"
                                             z_cage_ext = ""
@@ -2688,17 +2700,17 @@ def run_staff_app(equipe_assignee):
                                             if zone_filtre_match_j != "Toutes les zones" and z_ter_ext != zone_filtre_match_j:
                                                 continue
 
-                                            if z_cage_ext not in zones_match_specifique:
-                                                zones_match_specifique[z_cage_ext] = {"succes": 0, "echec": 0}
-
                                             if not z_cage_ext or z_cage_ext == "Non précisée":
                                                 continue
 
+                                            if z_cage_ext not in zones_match_specifique:
+                                                zones_match_specifique[z_cage_ext] = {"succes": 0, "echec": 0}
+
                                             est_gardienne_val = isinstance(p, Gardienne) or "gardien" in p.poste.lower()
                                             if not est_gardienne_val:
-                                                if act_type == "But":
+                                                if act_type == "But" or act_type.startswith("But ("):
                                                     zones_match_specifique[z_cage_ext]["succes"] += 1
-                                                elif act_type == "Tir raté":
+                                                elif act_type == "Tir raté" or act_type.startswith("Tir raté ("):
                                                     zones_match_specifique[z_cage_ext]["echec"] += 1
                                             else:
                                                 if act_type == "Arrêt décisif":
