@@ -87,8 +87,20 @@ def afficher_grille_saisie_interactive(key_suffix, action_type=None):
 def afficher_cage_recapitulative(donnees_zones, titre="Récapitulatif des Tirs", inclure_hors_cadre=True):
     """
     Affiche un récapitulatif visuel sous forme de grille 3x3 de la cage de handball.
+    Chaque case affiche « réussis / total des tirs de la zone » (ex. 1 but + 1 tir raté = 1 / 2),
+    pour les joueuses comme pour les gardiennes (arrêts / tirs subis).
     """
+    legende_integree = False
+    for ancien, nouveau in (
+        ("(✅ Buts | ❌ Ratés)", "(✅ Buts / Tirs)"),
+        ("(✅ Arrêts | ❌ Encaissés)", "(✅ Arrêts / Tirs subis)"),
+    ):
+        if ancien in titre:
+            titre = titre.replace(ancien, nouveau)
+            legende_integree = True
     st.markdown(f"**{titre}**")
+    if not legende_integree:
+        st.caption("Dans chaque case : réussis / total des tirs de la zone.")
     
     zones_standard = [
         ["Haut-Gauche", "Haut-Centre", "Haut-Droite"],
@@ -131,8 +143,8 @@ def afficher_cage_recapitulative(donnees_zones, titre="Récapitulatif des Tirs",
                 st.markdown(f"""
                     <div style="background-color: {bg_color} !important; border: 1px solid {border_color}; border-radius: 8px; padding: 10px; text-align: center; margin-bottom: 8px; font-size: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); color: #0f172a !important;">
                         <div style="font-weight: 700; color: #334155 !important; margin-bottom: 4px; font-size: 11px; text-transform: uppercase;">{z_nom.replace('-', ' ')}</div>
-                        <div style="color: #0f172a !important; font-weight: 600;"><b>{succes} / {echec}</b></div>
-                        <div style="color: #0284c7 !important; font-weight: bold; margin-top: 3px; font-size: 13px;">{pct}% <span style="font-size: 10px; color: #64748b !important;">({total})</span></div>
+                        <div style="color: #0f172a !important; font-weight: 600;"><b>{succes} / {total}</b></div>
+                        <div style="color: #0284c7 !important; font-weight: bold; margin-top: 3px; font-size: 13px;">{pct}%</div>
                     </div>
                 """, unsafe_allow_html=True)
 
