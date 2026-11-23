@@ -6,7 +6,20 @@ import re
 import secrets
 import shutil
 import streamlit as st
+import copy
+import time
+
 from hand_manager import supprimer_dossier_club
+from supabase_store import (
+    SCOPE_PLATEFORME,
+    StockageIndisponible,
+    delete_json,
+    dump_scope,
+    importer_dossier_club,
+    list_keys,
+    set_json,
+    _secret as secret_ou_env,
+)
 from theme import barre_laterale, html_bandeau_marque, injecter_theme_connexion
 
 PERMISSIONS_DEFAUT_PAR_ROLE = {
@@ -99,74 +112,102 @@ def slugify_club(nom_club: str) -> str:
     return slug or "club_default"
 
 
-def _default_registry() -> dict:
-    return {
-        "clubs": {
-            "Bordeaux Étudiants Club": {
-                "slug": "bordeaux_etudiants_club",
-                "actif": True,
-                "equipes": ["Séniors M", "Séniors F", "-18M", "-15F"],
-            }
-        },
+def _lignes_depuis_registre(registre: dict) -> dict:
+    """Registre {clubs, users} -> lignes {clé: valeur} (une ligne par club / par compte)."""
+    lignes = {}
+    for nom, info in (registre.get("clubs") or {}).items():
+        lignes[f"club:{nom}"] = info
+    for login, info in (registre.get("users") or {}).items():
+        lignes[f"user:{login}"] = info
+    return lignes
+
+
+def _registre_depuis_lignes(lignes: dict) -> dict:
+    reg = {"clubs": {}, "users": {}}
+    for cle, val in lignes.items():
+        if cle.startswith("club:"):
+            reg["clubs"][cle[5:]] = val
+        elif cle.startswith("user:"):
+            reg["users"][cle[5:]] = val
+    return reg
+
+
+def _enregistrer_lignes(lignes: dict) -> None:
+    for cle, val in lignes.items():
+        set_json(SCOPE_PLATEFORME, cle, val)
+
+
+def _registre_initial() -> dict:
+    """Premier démarrage sur une base vide.
+    1) si un ancien clubs_registry.json existe (dépôt GitHub / poste local), on l'importe avec les données des clubs ;
+    2) sinon on crée uniquement le super admin, à partir des secrets SUPER_ADMIN_USER / SUPER_ADMIN_PASSWORD."""
+    from hand_manager import DATA_ROOT
+
+    if os.path.exists(REGISTRY_FILE):
+        try:
+            with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
+                ancien = json.load(f)
+            if isinstance(ancien, dict) and ancien.get("users"):
+                for nom, info in (ancien.get("clubs") or {}).items():
+                    slug = info.get("slug") or slugify_club(nom)
+                    importer_dossier_club(slug, os.path.join(DATA_ROOT, "clubs", slug))
+                _enregistrer_lignes(_lignes_depuis_registre(ancien))
+                return ancien
+        except Exception:
+            pass
+
+    login = (secret_ou_env("SUPER_ADMIN_USER") or "super_admin").strip().lower()
+    mdp = secret_ou_env("SUPER_ADMIN_PASSWORD")
+    if not mdp:
+        raise StockageIndisponible(
+            "Base vide : définissez SUPER_ADMIN_PASSWORD (et éventuellement SUPER_ADMIN_USER) dans les secrets "
+            "pour créer le compte super admin."
+        )
+    reg = {
+        "clubs": {},
         "users": {
-            "super_admin": {
-                "password": hasher_mot_de_passe("#Lgan64290"),
+            login: {
+                "password": hasher_mot_de_passe(mdp),
                 "role": "super_admin",
                 "nom": "Super Admin Plateforme",
                 "club": None,
                 "equipes": [],
                 "permissions": dict(PERMISSIONS_DEFAUT_PAR_ROLE["super_admin"]),
-            },
-            "admin": {
-                "password": hasher_mot_de_passe("123"),
-                "role": "manager",
-                "nom": "Direction du Club",
-                "club": "Bordeaux Étudiants Club",
-                "equipes": [],
-                "permissions": dict(PERMISSIONS_DEFAUT_PAR_ROLE["manager"]),
-            },
-            "leho": {
-                "password": hasher_mot_de_passe("123"),
-                "role": "staff",
-                "nom": "Lého",
-                "club": "Bordeaux Étudiants Club",
-                "equipes": ["Séniors M", "Séniors F"],
-                "permissions": dict(PERMISSIONS_DEFAUT_PAR_ROLE["staff"]),
-            },
-            "coach_f": {
-                "password": hasher_mot_de_passe("123"),
-                "role": "staff",
-                "nom": "Marc",
-                "club": "Bordeaux Étudiants Club",
-                "equipes": ["-18M"],
-                "permissions": dict(PERMISSIONS_DEFAUT_PAR_ROLE["staff"]),
-            },
+            }
         },
     }
+    _enregistrer_lignes(_lignes_depuis_registre(reg))
+    return reg
 
 
-def sauvegarder_registre(registre: dict):
-    with open(REGISTRY_FILE, "w", encoding="utf-8") as f:
-        json.dump(registre, f, ensure_ascii=False, indent=4)
+def sauvegarder_registre(registre: dict, remplacer: bool = False):
+    """Enregistre uniquement ce que CETTE session a modifié (comparaison avec l'état chargé),
+    afin de ne pas écraser les modifications faites au même moment par d'autres utilisateurs.
+    remplacer=True : remplace tout le registre (restauration de sauvegarde)."""
+    nouvelles = _lignes_depuis_registre(registre)
+    snap = st.session_state.get("_registre_snap")
+    for cle, val in nouvelles.items():
+        if remplacer or snap is None or snap.get(cle) != val:
+            set_json(SCOPE_PLATEFORME, cle, val)
+    if remplacer:
+        a_supprimer = [c for c in list_keys(SCOPE_PLATEFORME) if c not in nouvelles]
+    else:
+        a_supprimer = [c for c in (snap or {}) if c not in nouvelles]
+    for cle in a_supprimer:
+        delete_json(SCOPE_PLATEFORME, cle)
+    st.session_state["_registre_snap"] = copy.deepcopy(nouvelles)
 
 
 def charger_registre() -> dict:
-    if not os.path.exists(REGISTRY_FILE):
-        reg = _default_registry()
-        sauvegarder_registre(reg)
-        return reg
-    try:
-        with open(REGISTRY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if "clubs" not in data or "users" not in data:
-                reg = _default_registry()
-                sauvegarder_registre(reg)
-                return reg
-            return data
-    except Exception:
-        reg = _default_registry()
-        sauvegarder_registre(reg)
-        return reg
+    lignes = dump_scope(SCOPE_PLATEFORME)
+    if lignes:
+        reg = _registre_depuis_lignes(lignes)
+    else:
+        reg = _registre_initial()
+        lignes = _lignes_depuis_registre(reg)
+    st.session_state["_registre_snap"] = copy.deepcopy(_lignes_depuis_registre(reg))
+    st.session_state["_registre_charge_a"] = time.time()
+    return reg
 
 
 def _session_vide() -> dict:
@@ -184,9 +225,18 @@ def _session_vide() -> dict:
 
 
 def init_users_db():
-    """Initialise le registre persistant (clubs + utilisateurs) et la session courante."""
-    if "registre_app" not in st.session_state:
-        st.session_state.registre_app = charger_registre()
+    """Charge le registre (clubs + utilisateurs) depuis Supabase (rafraîchi toutes les 45 s) et initialise la session."""
+    try:
+        recent = time.time() - st.session_state.get("_registre_charge_a", 0) < 45
+        if "registre_app" not in st.session_state or not recent:
+            st.session_state.registre_app = charger_registre()
+    except StockageIndisponible as exc:
+        st.error(f"Configuration manquante : {exc}")
+        st.stop()
+    except Exception as exc:
+        st.error("Base de données momentanément indisponible. Réessayez dans quelques secondes.")
+        st.caption(f"Détail technique : {exc}")
+        st.stop()
 
     # Compatibilité ascendante avec les références existantes à users_db / club_equipes
     st.session_state.users_db = st.session_state.registre_app["users"]
@@ -273,10 +323,6 @@ def ecran_connexion():
             else:
                 st.error("Identifiant ou mot de passe incorrect.")
 
-    with st.expander("Comptes de démonstration"):
-        st.markdown("- **Manager Club** : `admin` / `123` *(Bordeaux Étudiants Club)*")
-        st.markdown("- **Staff Multi-équipe** : `leho` / `123`")
-        st.markdown("- **Staff (-18M)** : `coach_f` / `123`")
 
 
 def afficher_en_tete_avec_profil(titre_principal, sous_titre=None, bouton_parametres=False):

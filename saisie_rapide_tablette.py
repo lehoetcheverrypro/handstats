@@ -307,6 +307,7 @@ def afficher_cockpit_tablette_plein_ecran(
     on_pause_chrono,
     on_ouvrir_popup_tir,
     on_quitter_mode_tablette,
+    capitaine: str | None = None,
 ):
     """
     Affiche l'interface de saisie live plein écran sans distraction optimisée pour tablette tactile.
@@ -391,8 +392,10 @@ def afficher_cockpit_tablette_plein_ecran(
                 pastille = _couleur_poste_pastille(p_item.poste)
                 disc = _badge_discipline_compact(p_item)
                 prenom = p_item.nom.split()[0]
+                cap_actif = capitaine or st.session_state.get(f"capitaine_match_{ctx_prefix}")
+                cap_tag = " (C)" if (cap_actif and p_item.nom == cap_actif) else ""
                 badge_num = f" [{idx + 1}]" if show_badges else ""
-                label = f"{pastille} #{num_j}{badge_num}\n{prenom}{disc}"
+                label = f"{pastille} #{num_j}{badge_num}\n{prenom}{cap_tag}{disc}"
                 if st.button(
                     label,
                     key=f"tab_7maj_{ctx_prefix}_{nom_j}",
@@ -423,11 +426,14 @@ def afficher_cockpit_tablette_plein_ecran(
             f"🥅 {p_obj.buts_encaisses} Enc."
         )
 
+    cap_actif = capitaine or st.session_state.get(f"capitaine_match_{ctx_prefix}")
+    cap_badge = " (C)" if (cap_actif and p_obj.nom == cap_actif) else ""
+
     st.markdown(
         f"""
         <div class="tab-focus-banner">
             <div>
-                <span style="font-size: 18px; font-weight: 800; color: #ffffff;">#{num_actif} {p_obj.nom}</span>
+                <span style="font-size: 18px; font-weight: 800; color: #ffffff;">#{num_actif} {p_obj.nom}{cap_badge}</span>
                 <span style="font-size: 13px; color: #94a3b8; margin-left: 8px;">({p_obj.poste})</span>
             </div>
             <div style="font-size: 14px; font-weight: 700; color: #38bdf8;">{resume_stat}</div>

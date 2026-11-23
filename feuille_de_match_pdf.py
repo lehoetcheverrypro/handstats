@@ -176,11 +176,17 @@ def _extraire_pertes(row):
     p_faute = row.get("Perte (Faute)", row.get("pertes_faute", row.get("pertes_de_balles_faute", 0)))
     return p_passe, p_faute
 
+def _formater_nom_avec_capitaine(nom, capitaine=None):
+    nom_str = str(nom or "")
+    if capitaine and nom_str.strip() == str(capitaine).strip():
+        if not nom_str.endswith("(C)"):
+            return f"{nom_str} (C)"
+    return nom_str
 
 def generer_pdf_match(
     nom_match, score_eq, score_adv, lignes_champ, lignes_gardiennes,
     zones_tirs=None, zones_gardiennes=None, attaques_adversaires=None,
-    club_nom="Mon Club", equipe_nom="Équipe", dossier_club=None
+    club_nom="Mon Club", equipe_nom="Équipe", dossier_club=None, capitaine=None
 ):
     genre = detecter_genre(equipe_nom)
     if genre == "M":
@@ -271,9 +277,10 @@ def generer_pdf_match(
         t = row.get("Tirs", 0)
         pct = f"{round((b / t * 100), 1)}%" if t > 0 else "0.0%"
         nom_j_val = str(row.get("Joueuse", row.get("Joueur", "")))
+        nom_j_aff = _formater_nom_avec_capitaine(nom_j_val, capitaine)
         table_data_ffh_c.append([
             Paragraph(str(row.get("N°", "")), cell_style),
-            Paragraph(nom_j_val, ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
+            Paragraph(nom_j_aff, ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
             Paragraph(str(row.get("Poste", "")), cell_style),
             Paragraph(str(b), cell_style),
             Paragraph(str(t), cell_style),
@@ -300,9 +307,10 @@ def generer_pdf_match(
         table_data_ffh_g = [[Paragraph(h, cell_header_style) for h in headers_ffh_g]]
         for row in lignes_gardiennes_triees:
             nom_g_val = str(row.get("Gardienne", row.get("Gardien", "")))
+            nom_g_aff = _formater_nom_avec_capitaine(nom_g_val, capitaine)
             table_data_ffh_g.append([
                 Paragraph(str(row.get("N°", "")), cell_style),
-                Paragraph(nom_g_val, ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
+                Paragraph(nom_g_aff, ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
                 Paragraph(str(row.get("Arrêts", 0)), cell_style),
                 Paragraph(str(row.get("Tirs Subis", 0)), cell_style),
                 Paragraph(str(row.get("% Arrêts", "0%")), cell_style),
@@ -346,7 +354,7 @@ def generer_pdf_match(
 
         table_data_off.append([
             Paragraph(str(row.get("N°", "")), cell_style),
-            Paragraph(nom_j_val, ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
+            Paragraph(_formater_nom_avec_capitaine(nom_j_val, capitaine), ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
             Paragraph(str(row.get("Poste", "")), cell_style),
             Paragraph(str(b), cell_style),
             Paragraph(str(t), cell_style),
@@ -390,9 +398,10 @@ def generer_pdf_match(
 
     for row in lignes_champ_triees:
         nom_j_val = str(row.get("Joueuse", row.get("Joueur", "")))
+        nom_j_aff = _formater_nom_avec_capitaine(nom_j_val, capitaine)
         table_data_def.append([
             Paragraph(str(row.get("N°", "")), cell_style),
-            Paragraph(nom_j_val, ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
+            Paragraph(nom_j_aff, ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
             Paragraph(str(row.get("Duels Off", "0/0")), cell_style),
             Paragraph(str(row.get("Duels Déf", "0/0")), cell_style),
             Paragraph(str(row.get("Interceptions", 0)), cell_style),
@@ -418,9 +427,10 @@ def generer_pdf_match(
         table_data_g_exp = [[Paragraph(h, cell_header_style) for h in headers_g_exp]]
         for row in lignes_gardiennes_triees:
             nom_g_val = str(row.get("Gardienne", row.get("Gardien", "")))
+            nom_g_aff = _formater_nom_avec_capitaine(nom_g_val, capitaine)
             table_data_g_exp.append([
                 Paragraph(str(row.get("N°", "")), cell_style),
-                Paragraph(nom_g_val, ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
+                Paragraph(nom_g_aff, ParagraphStyle('L', parent=cell_style, alignment=TA_LEFT)),
                 Paragraph(str(row.get("Arrêts", 0)), cell_style),
                 Paragraph(str(row.get("Tirs Subis", 0)), cell_style),
                 Paragraph(str(row.get("% Arrêts", "0%")), cell_style),
@@ -475,7 +485,7 @@ def generer_pdf_match(
 
         story.append(Paragraph(f"RAPPORT INDIVIDUEL — {poste}", header_org))
         story.append(Spacer(1, 2))
-        story.append(Paragraph(f"{num} — {str(nom).upper()}", title_style))
+        story.append(Paragraph(f"{num} — {_formater_nom_avec_capitaine(nom, capitaine).upper()}", title_style))
         story.append(Spacer(1, 10))
 
         if not est_gardienne:

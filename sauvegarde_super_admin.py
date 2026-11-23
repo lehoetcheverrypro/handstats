@@ -5,15 +5,12 @@ import os
 import zipfile
 import streamlit as st
 
+from supabase_store import dump_scope, get_bytes, set_bytes, set_json
+
 try:
     from auth_manager import sauvegarder_registre
 except Exception:
     sauvegarder_registre = None
-
-try:
-    from hand_manager import get_dossier_club
-except Exception:
-    get_dossier_club = None
 
 
 SCHEMA_VERSION = "1.1"
@@ -40,11 +37,11 @@ def _extraire_etat_session_propre() -> dict:
 
 def _collecter_fichiers_clubs(registre_app: dict) -> dict[str, str]:
     """
-    Lit les fichiers JSON d'équipes de chaque club connu dans le registre
+    Lit les données d'équipes de chaque club connu dans Supabase
     et retourne un mapping { 'slug_club/nom_fichier.json': contenu_json_str }.
     """
     fichiers_clubs: dict[str, str] = {}
-    if not get_dossier_club or not isinstance(registre_app, dict):
+    if not isinstance(registre_app, dict):
         return fichiers_clubs
 
     clubs_dict = registre_app.get("clubs", {})
@@ -55,19 +52,13 @@ def _collecter_fichiers_clubs(registre_app: dict) -> dict[str, str]:
         if not isinstance(club_info, dict):
             continue
         slug = club_info.get("slug") or club_nom.lower().replace(" ", "_")
-        dossier = get_dossier_club(slug)
-        if not dossier or not os.path.isdir(dossier):
+        try:
+            lignes = dump_scope(slug)
+        except Exception:
             continue
-
-        for nom_f in os.listdir(dossier):
-            if nom_f.lower().endswith(".json"):
-                chemin_f = os.path.join(dossier, nom_f)
-                if os.path.isfile(chemin_f):
-                    try:
-                        with open(chemin_f, "r", encoding="utf-8") as f:
-                            fichiers_clubs[f"{slug}/{nom_f}"] = f.read()
-                    except Exception:
-                        pass
+        for cle, valeur in lignes.items():
+            if cle.lower().endswith(".json") and not cle.startswith(("draft_", "offline_queue_")):
+                fichiers_clubs[f"{slug}/{cle}"] = json.dumps(valeur, ensure_ascii=False)
 
     return fichiers_clubs
 
@@ -111,27 +102,18 @@ def generer_octets_sauvegarde_zip(manager=None, dossier_logos: str | None = None
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("sauvegarde.json", json_bytes)
 
-        dossiers_a_scanner = []
-        if dossier_logos and os.path.isdir(dossier_logos):
-            dossiers_a_scanner.append(dossier_logos)
-
         registre_actuel = st.session_state.get("registre_app", {})
-        if get_dossier_club and isinstance(registre_actuel, dict):
+        if isinstance(registre_actuel, dict):
             for club_nom, club_info in registre_actuel.get("clubs", {}).items():
-                if isinstance(club_info, dict):
-                    slug = club_info.get("slug") or club_nom.lower().replace(" ", "_")
-                    d_club = get_dossier_club(slug)
-                    if d_club and os.path.isdir(d_club) and d_club not in dossiers_a_scanner:
-                        dossiers_a_scanner.append(d_club)
-
-        for d_scan in dossiers_a_scanner:
-            for racine, _, fichiers in os.walk(d_scan):
-                for nom_fichier in fichiers:
-                    if nom_fichier.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
-                        chemin_complet = os.path.join(racine, nom_fichier)
-                        rel_path = os.path.relpath(chemin_complet, d_scan)
-                        arcname = os.path.join("logos", os.path.basename(d_scan), rel_path)
-                        zf.write(chemin_complet, arcname=arcname)
+                if not isinstance(club_info, dict):
+                    continue
+                slug = club_info.get("slug") or club_nom.lower().replace(" ", "_")
+                try:
+                    logo = get_bytes(slug, "logo_club.png")
+                except Exception:
+                    logo = None
+                if logo:
+                    zf.writestr(f"logos/{slug}/logo_club.png", logo)
 
     buf.seek(0)
     return buf.getvalue()
@@ -173,19 +155,15 @@ def appliquer_restauration_sauvegarde(payload: dict, manager=None, restaurer_ses
             if isinstance(reg_restore.get("users"), dict):
                 st.session_state["users_db"] = reg_restore["users"]
             if sauvegarder_registre and callable(sauvegarder_registre):
-                sauvegarder_registre(reg_restore)
+                sauvegarder_registre(reg_restore, remplacer=True)
 
         fichiers_clubs = payload.get("fichiers_equipes_clubs") or {}
-        if isinstance(fichiers_clubs, dict) and get_dossier_club:
+        if isinstance(fichiers_clubs, dict):
             for rel_cle, contenu_json in fichiers_clubs.items():
                 if "/" not in rel_cle:
                     continue
                 slug, nom_f = rel_cle.split("/", 1)
-                dossier_cible = get_dossier_club(slug)
-                os.makedirs(dossier_cible, exist_ok=True)
-                chemin_cible = os.path.join(dossier_cible, os.path.basename(nom_f))
-                with open(chemin_cible, "w", encoding="utf-8") as f:
-                    f.write(contenu_json)
+                set_json(slug, os.path.basename(nom_f), json.loads(contenu_json))
 
         manager_data = payload.get("manager_data") or {}
         if manager is not None and manager_data:

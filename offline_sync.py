@@ -1,8 +1,8 @@
-import json
-import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+from supabase_store import delete_json, get_json, set_json
 
 
 def _now_iso() -> str:
@@ -10,36 +10,28 @@ def _now_iso() -> str:
 
 
 class OfflineSyncManager:
-    """Gestion locale des brouillons de match en cours et de la file d'attente de synchronisation."""
+    """Brouillons de match en cours et file d'attente de synchronisation, stockés dans Supabase
+    (ils survivent donc aux redémarrages et mises à jour de l'application)."""
 
     def __init__(self, dossier_club: str, club_slug: str):
-        self.dossier_club = Path(dossier_club)
+        self.dossier_club = Path(dossier_club)   # conservé pour compatibilité
         self.club_slug = club_slug
-        self.sync_dir = self.dossier_club / "offline_sync"
-        self.sync_dir.mkdir(parents=True, exist_ok=True)
-        self.queue_path = self.sync_dir / f"queue_{self.club_slug}.json"
-        if not self.queue_path.exists():
-            self._write_json(self.queue_path, {"items": []})
+        self.queue_key = f"offline_queue_{self.club_slug}"
 
-    def _read_json(self, path: Path, default):
+    def _read(self, key: str, default):
         try:
-            if not path.exists():
-                return default
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            valeur = get_json(self.club_slug, key, None)
+            return default if valeur is None else valeur
         except Exception:
             return default
 
-    def _write_json(self, path: Path, payload):
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, path)
+    def _write(self, key: str, payload) -> None:
+        set_json(self.club_slug, key, payload)
 
-    # --- Brouillon local du match en cours ---
-    def draft_file(self, ctx_prefix: str) -> Path:
+    # --- Brouillon du match en cours ---
+    def draft_key(self, ctx_prefix: str) -> str:
         safe_prefix = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in ctx_prefix)
-        return self.sync_dir / f"draft_{safe_prefix}.json"
+        return f"draft_{safe_prefix}"
 
     def sauvegarder_brouillon(self, ctx_prefix: str, state_data: dict) -> None:
         payload = {
@@ -47,22 +39,26 @@ class OfflineSyncManager:
             "updated_at": _now_iso(),
             "state": state_data,
         }
-        self._write_json(self.draft_file(ctx_prefix), payload)
+        try:
+            self._write(self.draft_key(ctx_prefix), payload)
+        except Exception:
+            pass  # un échec ponctuel de sauvegarde du brouillon ne doit pas interrompre le match
 
     def charger_brouillon(self, ctx_prefix: str) -> dict | None:
-        data = self._read_json(self.draft_file(ctx_prefix), None)
+        data = self._read(self.draft_key(ctx_prefix), None)
         if isinstance(data, dict) and isinstance(data.get("state"), dict):
             return data
         return None
 
     def supprimer_brouillon(self, ctx_prefix: str) -> None:
-        path = self.draft_file(ctx_prefix)
-        if path.exists():
-            path.unlink()
+        try:
+            delete_json(self.club_slug, self.draft_key(ctx_prefix))
+        except Exception:
+            pass
 
     # --- File d'attente de synchronisation ---
     def ajouter_operation(self, op_type: str, equipe_nom: str, payload: dict) -> str:
-        queue_data = self._read_json(self.queue_path, {"items": []})
+        queue_data = self._read(self.queue_key, {"items": []})
         items = queue_data.get("items", [])
 
         op_id = str(uuid.uuid4())
@@ -78,15 +74,15 @@ class OfflineSyncManager:
             "payload": payload,
         }
         items.append(entry)
-        self._write_json(self.queue_path, {"items": items})
+        self._write(self.queue_key, {"items": items})
         return op_id
 
     def lister_en_attente(self) -> list[dict]:
-        queue_data = self._read_json(self.queue_path, {"items": []})
+        queue_data = self._read(self.queue_key, {"items": []})
         return [it for it in queue_data.get("items", []) if it.get("status") in ("pending", "error")]
 
     def synchroniser_tout(self, handler_fn) -> dict:
-        queue_data = self._read_json(self.queue_path, {"items": []})
+        queue_data = self._read(self.queue_key, {"items": []})
         items = queue_data.get("items", [])
         synced_count = 0
         failed_count = 0
@@ -104,14 +100,14 @@ class OfflineSyncManager:
                     it["error_msg"] = str(exc)
                     failed_count += 1
 
-        self._write_json(self.queue_path, {"items": items})
+        self._write(self.queue_key, {"items": items})
         return {"synced": synced_count, "failed": failed_count}
 
     def purger_synchronises(self) -> int:
-        queue_data = self._read_json(self.queue_path, {"items": []})
+        queue_data = self._read(self.queue_key, {"items": []})
         items = queue_data.get("items", [])
         restants = [it for it in items if it.get("status") != "synced"]
         supprimes = len(items) - len(restants)
         if supprimes > 0:
-            self._write_json(self.queue_path, {"items": restants})
+            self._write(self.queue_key, {"items": restants})
         return supprimes

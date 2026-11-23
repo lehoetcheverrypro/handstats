@@ -544,6 +544,23 @@ def run_staff_app(equipe_assignee):
                     with st.form(key=f"form_config_match_{ctx_prefix}"):
                         nom_match_saisi = st.text_input("Nom / Adversaire du match", value="J1 - Match 1")
 
+                        club_equipes = _get_equipes_du_club_courant()
+                        autres_equipes = [eq for eq in club_equipes if eq != equipe_assignee]
+                        toutes_joueuses_club = manager.recuperer_toutes_les_joueuses_du_club(
+                            autres_equipes, club_slug=club_slug_session
+                        )
+                        noms_surclassables = [
+                            nom for nom, info in toutes_joueuses_club.items()
+                            if info["equipe_origine"] in autres_equipes and nom not in manager.joueuses
+                        ]
+                        options_cap_init = ["Aucun"] + list(manager.joueuses.keys()) + noms_surclassables
+                        cap_saisi = st.selectbox(
+                            "Capitaine (C) pour cette rencontre",
+                            options_cap_init,
+                            index=0,
+                            key=f"sel_cap_match_{ctx_prefix}",
+                        )
+
                         st.markdown("---")
                         st.markdown(f"**{L['joueurs'].capitalize()} de l'effectif principal :**")
 
@@ -622,6 +639,9 @@ def run_staff_app(equipe_assignee):
 
                             dict_nums_match = {**numeros_match_saisis, **surclassements_coches}
                             st.session_state[f"numeros_match_{ctx_prefix}"] = dict_nums_match
+                            st.session_state[f"capitaine_match_{ctx_prefix}"] = (
+                                cap_saisi if (cap_saisi and cap_saisi != "Aucun" and cap_saisi in membres_selectionnes) else None
+                            )
 
                             st.session_state[pretes_key] = {}
                             for nom_s in membres_surclassees_noms:
@@ -1116,7 +1136,8 @@ def run_staff_app(equipe_assignee):
                         on_pause_chrono=_pause_chrono_tab,
                         on_ouvrir_popup_tir=_ouvrir_popup_tir_tab,
                         on_quitter_mode_tablette=_quitter_mode_tab,
-                    )
+                        capitaine=st.session_state.get(f"capitaine_match_{ctx_prefix}"),
+                        )
                     return
 
                 c_top_info, c_top_score_chrono, c_top_controls = st.columns([1.2, 2.6, 1.2])
@@ -1229,7 +1250,9 @@ def run_staff_app(equipe_assignee):
                                 signe_disc = f" ⏱️×{nb_2m}" if nb_2m > 1 else " ⏱️"
                             elif nb_cj > 0:
                                 signe_disc = " 🟨"
-                            label_btn = f"{prefix} #{num_actuel} {p_item.nom.split()[0]}{signe_disc}"
+                            cap_courant = st.session_state.get(f"capitaine_match_{ctx_prefix}")
+                            tag_cap = " (C)" if (cap_courant and p_item.nom == cap_courant) else ""
+                            label_btn = f"{prefix} #{num_actuel} {p_item.nom.split()[0]}{tag_cap}{signe_disc}"
 
                             if st.button(label_btn, key=f"terrain_j_{ctx_prefix}_{nom_j}", use_container_width=True, type=type_btn):
                                 st.session_state[focus_key] = nom_j
@@ -1794,6 +1817,7 @@ def run_staff_app(equipe_assignee):
                             sync_mgr.supprimer_brouillon(ctx_prefix)
 
                             st.session_state[f"match_en_cours_{ctx_prefix}"] = False
+                            st.session_state[f"capitaine_match_{ctx_prefix}"] = None
                             st.session_state[att_adv_key] = {"Yago": 0, "Yego": 0, "Montpellier": 0, "Croisé": 0, "Autre": 0}
                             st.session_state[zones_key] = {}
                             st.session_state[popup_key] = None
@@ -1801,6 +1825,7 @@ def run_staff_app(equipe_assignee):
                             st.session_state[pretes_key] = {}
                             if f"numeros_match_{ctx_prefix}" in st.session_state:
                                 del st.session_state[f"numeros_match_{ctx_prefix}"]
+                                st.session_state[f"capitaine_match_{ctx_prefix}"] = None
                             if f"journal_actions_match_{ctx_prefix}" in st.session_state:
                                 del st.session_state[f"journal_actions_match_{ctx_prefix}"]
 
@@ -1914,6 +1939,7 @@ def run_staff_app(equipe_assignee):
                         sync_mgr.supprimer_brouillon(ctx_prefix)
 
                         st.session_state[f"match_en_cours_{ctx_prefix}"] = False
+                        st.session_state[f"capitaine_match_{ctx_prefix}"] = None
                         st.session_state[att_adv_key] = {"Yago": 0, "Yego": 0, "Montpellier": 0, "Croisé": 0, "Autre": 0}
                         st.session_state[zones_key] = {}
                         st.session_state[popup_key] = None
@@ -2224,7 +2250,8 @@ def run_staff_app(equipe_assignee):
                                 club_nom=club_nom_session,
                                 equipe_nom=equipe_assignee,
                                 dossier_club=dossier_club_session,
-                            )
+                                capitaine=st.session_state.get(f"capitaine_match_{ctx_prefix}"),
+                                )
                             pdf_chrono_bytes = generer_pdf_chronologique(
                                 nom_match=match_choisi, score_eq=score_eq, score_adv=score_adv,
                                 historique_actions=journal_actions_archive, attaques_adv=attaques_adv_archive,

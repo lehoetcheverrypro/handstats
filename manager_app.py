@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import json
 import os
 import zipfile
 import io
@@ -19,6 +20,7 @@ from hand_manager import (
     resumer_charge_forme_joueur,
 )
 from rapport_club_pdf import generer_pdf_bilan_global
+from supabase_store import dump_scope, get_bytes, set_bytes
 from theme import barre_laterale
 
 
@@ -403,8 +405,11 @@ def afficher_espace_manager():
             submit_logo = st.form_submit_button("Enregistrer le logo du club")
 
             if submit_logo and uploaded_file is not None:
+                contenu_logo = bytes(uploaded_file.getbuffer())
+                mime_logo = "image/png" if (uploaded_file.name or "").lower().endswith(".png") else "image/jpeg"
                 with open(logo_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
+                    f.write(contenu_logo)
+                set_bytes(club_slug, "logo_club.png", contenu_logo, mime=mime_logo)
                 st.success("Logo du club mis à jour avec succès !")
                 st.rerun()
 
@@ -413,10 +418,14 @@ def afficher_espace_manager():
         if st.button("📦 Préparer la Sauvegarde du Club (.zip)", use_container_width=True):
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                for filename in os.listdir(dossier_club):
-                    chemin_f = os.path.join(dossier_club, filename)
-                    if os.path.isfile(chemin_f) and (filename.endswith(".json") or filename == "logo_club.png"):
-                        zip_file.write(chemin_f, arcname=filename)
+                for cle, valeur in dump_scope(club_slug).items():
+                    if cle.startswith(("draft_", "offline_queue_")):
+                        continue  # données temporaires du match en cours
+                    if cle.endswith(".json"):
+                        zip_file.writestr(cle, json.dumps(valeur, ensure_ascii=False, indent=2))
+                logo_octets = get_bytes(club_slug, "logo_club.png")
+                if logo_octets:
+                    zip_file.writestr("logo_club.png", logo_octets)
 
             zip_buffer.seek(0)
             st.download_button(

@@ -4,6 +4,8 @@ import os
 import re
 import shutil
 
+from supabase_store import get_bytes, get_json, set_json, supprimer_scope
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_ROOT = os.environ.get("HANDSTAT_DATA_DIR", os.path.join(BASE_DIR, "data"))
 
@@ -15,21 +17,51 @@ def normaliser_slug_club(club_slug: str | None) -> str:
     return slug or "club_default"
 
 
+_LOGO_VERIFIE: dict[str, float] = {}
+
+
+def _synchroniser_logo_local(slug: str, dossier: str, force: bool = False) -> None:
+    """Recopie le logo du club (stocké dans Supabase) dans le dossier local temporaire,
+    pour que les PDF et le thème le trouvent comme avant (logo_club.png)."""
+    import time
+
+    maintenant = time.time()
+    if not force and maintenant - _LOGO_VERIFIE.get(slug, 0) < 30:
+        return
+    _LOGO_VERIFIE[slug] = maintenant
+    try:
+        data = get_bytes(slug, "logo_club.png")
+        if data is None:
+            return
+        chemin = os.path.join(dossier, "logo_club.png")
+        if os.path.exists(chemin):
+            with open(chemin, "rb") as f:
+                if f.read() == data:
+                    return
+        with open(chemin, "wb") as f:
+            f.write(data)
+    except Exception:
+        pass  # le logo est facultatif : ne jamais bloquer l'application
+
+
 def get_dossier_club(club_slug: str | None) -> str:
+    """Dossier LOCAL temporaire du club (cache du logo). Les données, elles, sont dans Supabase."""
     dossier = os.path.join(DATA_ROOT, "clubs", normaliser_slug_club(club_slug))
     os.makedirs(dossier, exist_ok=True)
+    _synchroniser_logo_local(normaliser_slug_club(club_slug), dossier)
     return dossier
 
 
 def supprimer_dossier_club(club_slug: str | None) -> bool:
-    """Supprime définitivement le dossier de données d'un club si existant."""
+    """Supprime définitivement les données (Supabase) et le cache local d'un club."""
     if not club_slug:
         return False
     slug_propre = normaliser_slug_club(club_slug)
+    supprimer_scope(slug_propre)
     racine_clubs = os.path.abspath(os.path.join(DATA_ROOT, "clubs"))
     cible = os.path.abspath(os.path.join(racine_clubs, slug_propre))
 
-    # Sécurité : s'assurer que la cible reste strictement à l'intérieur de DATA_ROOT/clubs
+    # Sécurité : la cible doit rester strictement à l'intérieur de DATA_ROOT/clubs
     if os.path.commonpath([racine_clubs, cible]) != racine_clubs or cible == racine_clubs:
         return False
 
@@ -142,7 +174,9 @@ class EquipeManager:
         self.club_slug = normaliser_slug_club(club_slug)
         self.dossier_club = get_dossier_club(self.club_slug)
         nom_base = os.path.basename(fichier)
-        self.fichier = os.path.join(self.dossier_club, nom_base)
+        self.cle_stockage = nom_base                     # clé dans Supabase (ancien nom de fichier)
+        self.fichier = os.path.join(self.dossier_club, nom_base)   # conservé pour compatibilité
+        self._charge_ok = True
         self.joueuses = {}
         self.charger_donnees()
 
@@ -159,51 +193,59 @@ class EquipeManager:
             self.sauvegarder_donnees()
 
     def sauvegarder_donnees(self):
-        os.makedirs(self.dossier_club, exist_ok=True)
+        if not getattr(self, "_charge_ok", True):
+            raise RuntimeError(
+                "Sauvegarde bloquée : le chargement initial des données a échoué "
+                "(évite d'écraser les données existantes). Rechargez la page."
+            )
         data = {nom: j.to_dict() for nom, j in self.joueuses.items()}
-        with open(self.fichier, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+        set_json(self.club_slug, self.cle_stockage, data)
 
     def charger_donnees(self):
-        if os.path.exists(self.fichier):
-            try:
-                with open(self.fichier, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self.joueuses = {}
-                    for nom, d in data.items():
-                        if not isinstance(d, dict):
-                            continue
-                        if d.get("type") == "gardienne":
-                            j = Gardienne(d.get("nom", nom), d.get("poste", "Gardienne"), d.get("numero", 1))
-                            j.arrets = d.get("arrets", 0)
-                            j.tirs_subis = d.get("tirs_subis", 0)
-                            j.buts_encaisses = d.get("buts_encaisses", 0)
-                            j.buts = d.get("buts", 0)
-                            j.tirs = d.get("tirs", 0)
-                        else:
-                            j = JoueuseDeChamp(d.get("nom", nom), d.get("poste", "Arrière gauche"), d.get("numero", 1))
-                            j.buts = d.get("buts", 0)
-                            j.tirs = d.get("tirs", 0)
-                            j.passes_decisives = d.get("passes_decisives", 0)
-                            j.pertes_de_balles_passe = d.get("pertes_de_balles_passe", 0)
-                            j.pertes_de_balles_faute = d.get("pertes_de_balles_faute", 0)
-                            j.duels_off_gagnes = d.get("duels_off_gagnes", 0)
-                            j.duels_off_perdus = d.get("duels_off_perdus", 0)
-                            j.duels_def_gagnes = d.get("duels_def_gagnes", 0)
-                            j.duels_def_perdus = d.get("duels_def_perdus", 0)
-                            j.neutralisations = d.get("neutralisations", 0)
-                            j.interceptions = d.get("interceptions", 0)
-                            j.pertes_balles_provoquees = d.get("pertes_balles_provoquees", 0)
+        # Une erreur réseau/base remonte volontairement : on ne doit JAMAIS considérer
+        # l'équipe comme vide si la lecture a échoué (risque d'écraser les données).
+        self._charge_ok = False
+        data = get_json(self.club_slug, self.cle_stockage, None)
+        if data is None:
+            self._charge_ok = True
+            return
+        try:
+            self.joueuses = {}
+            for nom, d in data.items():
+                if not isinstance(d, dict):
+                    continue
+                if d.get("type") == "gardienne":
+                    j = Gardienne(d.get("nom", nom), d.get("poste", "Gardienne"), d.get("numero", 1))
+                    j.arrets = d.get("arrets", 0)
+                    j.tirs_subis = d.get("tirs_subis", 0)
+                    j.buts_encaisses = d.get("buts_encaisses", 0)
+                    j.buts = d.get("buts", 0)
+                    j.tirs = d.get("tirs", 0)
+                else:
+                    j = JoueuseDeChamp(d.get("nom", nom), d.get("poste", "Arrière gauche"), d.get("numero", 1))
+                    j.buts = d.get("buts", 0)
+                    j.tirs = d.get("tirs", 0)
+                    j.passes_decisives = d.get("passes_decisives", 0)
+                    j.pertes_de_balles_passe = d.get("pertes_de_balles_passe", 0)
+                    j.pertes_de_balles_faute = d.get("pertes_de_balles_faute", 0)
+                    j.duels_off_gagnes = d.get("duels_off_gagnes", 0)
+                    j.duels_off_perdus = d.get("duels_off_perdus", 0)
+                    j.duels_def_gagnes = d.get("duels_def_gagnes", 0)
+                    j.duels_def_perdus = d.get("duels_def_perdus", 0)
+                    j.neutralisations = d.get("neutralisations", 0)
+                    j.interceptions = d.get("interceptions", 0)
+                    j.pertes_balles_provoquees = d.get("pertes_balles_provoquees", 0)
 
-                        j.cartons_jaunes = d.get("cartons_jaunes", 0)
-                        j.exclusions_2min = d.get("exclusions_2min", 0)
-                        j.cartons_rouges = d.get("cartons_rouges", 0)
-                        j.historique_matchs = d.get("historique_matchs", [])
-                        suivi_raw = d.get("suivi_longitudinal", [])
-                        j.suivi_longitudinal = suivi_raw if isinstance(suivi_raw, list) else []
-                        self.joueuses[nom] = j
-            except Exception as e:
-                print(f"Erreur lors du chargement : {e}")
+                j.cartons_jaunes = d.get("cartons_jaunes", 0)
+                j.exclusions_2min = d.get("exclusions_2min", 0)
+                j.cartons_rouges = d.get("cartons_rouges", 0)
+                j.historique_matchs = d.get("historique_matchs", [])
+                suivi_raw = d.get("suivi_longitudinal", [])
+                j.suivi_longitudinal = suivi_raw if isinstance(suivi_raw, list) else []
+                self.joueuses[nom] = j
+            self._charge_ok = True
+        except Exception as e:
+            print(f"Erreur lors du chargement : {e}")
 
     def archiver_match(
         self,
@@ -215,6 +257,7 @@ class EquipeManager:
         numeros_match=None,
         pretes_dict=None,
         club_equipes=None,
+        capitaine=None,
     ):
         if numeros_match is None:
             numeros_match = {}
@@ -256,6 +299,7 @@ class EquipeManager:
                 "score_equipe": score_eq,
                 "score_adversaire": score_adv,
                 "numero_match": numero_a_archiver,
+                "capitaine": capitaine,
                 "attaques_adversaires": attaques_adv_data or {},
                 "journal_actions": journal_actions or [],
                 "commentaires_staff": commentaires_staff or [],
@@ -362,6 +406,7 @@ class EquipeManager:
                         "score_equipe": score_eq,
                         "score_adversaire": score_adv,
                         "numero_match": numero_a_archiver_p,
+                        "capitaine": capitaine,
                         "attaques_adversaires": attaques_adv_data or {},
                         "journal_actions": journal_actions or [],
                         "commentaires_staff": commentaires_staff or [],
@@ -434,24 +479,22 @@ class EquipeManager:
     @staticmethod
     def recuperer_toutes_les_joueuses_du_club(club_equipes, club_slug=None):
         joueuses_club = {}
-        dossier_c = get_dossier_club(club_slug)
+        slug = normaliser_slug_club(club_slug)
         for eq in club_equipes or []:
-            nom_fichier = get_nom_fichier_equipe(eq)
-            chemin_complet = os.path.join(dossier_c, nom_fichier)
-            if os.path.exists(chemin_complet):
-                try:
-                    with open(chemin_complet, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        for nom, d in data.items():
-                            if nom not in joueuses_club and isinstance(d, dict):
-                                joueuses_club[nom] = {
-                                    "equipe_origine": eq,
-                                    "poste": d.get("poste"),
-                                    "numero": d.get("numero"),
-                                    "type": d.get("type"),
-                                }
-                except Exception:
-                    pass
+            try:
+                data = get_json(slug, get_nom_fichier_equipe(eq), None)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            for nom, d in data.items():
+                if nom not in joueuses_club and isinstance(d, dict):
+                    joueuses_club[nom] = {
+                        "equipe_origine": eq,
+                        "poste": d.get("poste"),
+                        "numero": d.get("numero"),
+                        "type": d.get("type"),
+                    }
         return joueuses_club
 
     def transferer_joueuse(self, nom_joueuse, autre_manager):

@@ -1,8 +1,19 @@
-import json
-import os
 import streamlit as st
 
-SETTINGS_FILE = "handstat_settings.json"
+from supabase_store import SCOPE_UTILISATEURS, get_json, set_json
+
+
+def _cle_parametres() -> str:
+    """Les réglages (raccourcis clavier...) sont propres à chaque utilisateur."""
+    username = (st.session_state.get("user_session") or {}).get("username") or "_defaut"
+    return f"settings_{username}"
+
+
+def _lire_parametres_stockes():
+    try:
+        return get_json(SCOPE_UTILISATEURS, _cle_parametres(), None)
+    except Exception:
+        return None
 
 DEFAULT_KEYMAP = {
     "but_arret": "b",
@@ -34,7 +45,7 @@ DEFAULT_SETTINGS = {
 
 
 def charger_parametres() -> dict:
-    """Charge les paramètres depuis le disque et les met en cache dans st.session_state."""
+    """Charge les paramètres de l'utilisateur depuis Supabase et les met en cache dans st.session_state."""
     if "handstat_settings" in st.session_state:
         return st.session_state["handstat_settings"]
 
@@ -44,10 +55,10 @@ def charger_parametres() -> dict:
         "keymap": DEFAULT_KEYMAP.copy(),
     }
 
-    if os.path.exists(SETTINGS_FILE):
+    donnees_stockees = _lire_parametres_stockes()
+    if donnees_stockees is not None:
         try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = donnees_stockees
             if isinstance(data, dict):
                 settings["shortcuts_enabled"] = bool(
                     data.get("shortcuts_enabled", settings["shortcuts_enabled"])
@@ -69,11 +80,10 @@ def charger_parametres() -> dict:
 
 
 def sauvegarder_parametres(settings: dict) -> None:
-    """Sauvegarde les paramètres dans st.session_state et sur disque."""
+    """Sauvegarde les paramètres dans st.session_state et dans Supabase."""
     st.session_state["handstat_settings"] = settings
     try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
+        set_json(SCOPE_UTILISATEURS, _cle_parametres(), settings)
     except Exception:
         pass
 
