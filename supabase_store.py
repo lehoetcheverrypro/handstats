@@ -164,10 +164,14 @@ def _backend():
 # ---------------------------------------------------------------------
 # API publique
 # ---------------------------------------------------------------------
-def get_json(scope: str, key: str, default=None):
+def get_json(scope: str, key: str, default=None, immuable: bool = False):
+    """immuable=True : la donnée ne change jamais une fois écrite (ex. détail d'un match archivé) ;
+    si elle est en cache, on la renvoie sans interroger la base."""
     b = _backend()
     ck = (scope, key)
     en_cache = _CACHE.get(ck)
+    if en_cache is not None and immuable:
+        return json.loads(en_cache[1])
     if en_cache is not None:
         version = b.fetch_version(scope, key)
         if version is None:

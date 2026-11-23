@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta
+import hashlib
 import json
 import os
 import re
 import shutil
 
-from supabase_store import get_bytes, get_json, set_json, supprimer_scope
+from supabase_store import delete_json, get_bytes, get_json, set_json, supprimer_scope
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_ROOT = os.environ.get("HANDSTAT_DATA_DIR", os.path.join(BASE_DIR, "data"))
@@ -72,6 +73,53 @@ def supprimer_dossier_club(club_slug: str | None) -> bool:
 
 def get_nom_fichier_equipe(nom_equipe: str) -> str:
     return f"effectif_{nom_equipe.replace(' ', '_').replace('-', '')}.json"
+
+
+CHAMPS_LOURDS = ("journal_actions", "commentaires_staff", "attaques_adversaires")
+
+
+class EntreeMatch(dict):
+    """Entrée d'historique d'un match pour une joueuse.
+
+    Les champs volumineux (journal chronologique, notes du staff, attaques adverses) sont identiques pour
+    toutes les joueuses d'un match : ils ne sont donc plus recopiés dans chaque fiche mais stockés UNE fois
+    par match, et chargés seulement quand on les lit. Pour le reste du code rien ne change :
+    entree.get("journal_actions") et entree["journal_actions"] fonctionnent comme avant.
+    """
+
+    def __init__(self, donnees=(), chargeur=None, detail=None):
+        super().__init__(donnees)
+        self._chargeur = chargeur
+        self._detail = detail
+
+    def _lourd(self):
+        if self._detail is None:
+            mid = dict.get(self, "match_id")
+            self._detail = (self._chargeur(mid) if (self._chargeur and mid) else None) or {}
+        return self._detail
+
+    def _delegue(self, cle):
+        return cle in CHAMPS_LOURDS and not dict.__contains__(self, cle) and bool(dict.get(self, "match_id"))
+
+    def __missing__(self, cle):
+        if self._delegue(cle):
+            detail = self._lourd()
+            if cle in detail:
+                return detail[cle]
+        raise KeyError(cle)
+
+    def get(self, cle, defaut=None):
+        if self._delegue(cle):
+            return self._lourd().get(cle, defaut)
+        return dict.get(self, cle, defaut)
+
+    def __contains__(self, cle):
+        if self._delegue(cle):
+            return cle in self._lourd()
+        return dict.__contains__(self, cle)
+
+    def copy(self):
+        return EntreeMatch(self, self._chargeur, self._detail)
 
 
 class Joueuse:
@@ -177,6 +225,8 @@ class EquipeManager:
         self.cle_stockage = nom_base                     # clé dans Supabase (ancien nom de fichier)
         self.fichier = os.path.join(self.dossier_club, nom_base)   # conservé pour compatibilité
         self._charge_ok = True
+        self._ids_charges = set()      # détails de match référencés au chargement (pour le ménage)
+        self._details_cache = {}
         self.joueuses = {}
         self.charger_donnees()
 
@@ -200,6 +250,78 @@ class EquipeManager:
             )
         data = {nom: j.to_dict() for nom, j in self.joueuses.items()}
         set_json(self.club_slug, self.cle_stockage, data)
+
+        # Ménage : supprime les détails de match qui ne sont plus référencés (match archivé supprimé).
+        actuels = self._ids_details_references()
+        for mid in self._ids_charges - actuels:
+            try:
+                delete_json(self.club_slug, self._cle_detail(mid))
+            except Exception:
+                pass
+        self._ids_charges = actuels
+
+    # --- Détails de match (journal, notes, attaques adverses) stockés une seule fois par match ---
+    def _cle_detail(self, match_id):
+        racine = self.cle_stockage[:-5] if self.cle_stockage.lower().endswith(".json") else self.cle_stockage
+        return f"detail_{racine}_{match_id}.json"
+
+    @staticmethod
+    def _id_detail(nom_match, detail):
+        brut = json.dumps([nom_match, detail], sort_keys=True, ensure_ascii=False, default=str)
+        return hashlib.sha1(brut.encode("utf-8")).hexdigest()[:20]
+
+    def _charger_detail(self, match_id):
+        if match_id not in self._details_cache:
+            self._details_cache[match_id] = get_json(
+                self.club_slug, self._cle_detail(match_id), None, immuable=True
+            )
+        return self._details_cache[match_id]
+
+    def _nouvelle_entree(self, donnees, detail=None):
+        return EntreeMatch(donnees, self._charger_detail, detail)
+
+    def _ids_details_references(self):
+        ids = set()
+        for j in self.joueuses.values():
+            for m in j.historique_matchs:
+                if isinstance(m, dict):
+                    mid = dict.get(m, "match_id")
+                    if mid:
+                        ids.add(mid)
+        return ids
+
+    def _compacter_historique_ancien(self):
+        """Migration automatique : ancien format (journal copié dans chaque joueuse) -> format compact.
+        Les détails sont écrits AVANT de modifier quoi que ce soit ; en cas d'échec, rien n'est changé."""
+        try:
+            details = {}
+            remplacements = []
+            for j in self.joueuses.values():
+                for idx, m in enumerate(j.historique_matchs):
+                    if not isinstance(m, dict) or not any(dict.__contains__(m, k) for k in CHAMPS_LOURDS):
+                        continue
+                    detail = {
+                        "attaques_adversaires": dict.get(m, "attaques_adversaires") or {},
+                        "journal_actions": dict.get(m, "journal_actions") or [],
+                        "commentaires_staff": dict.get(m, "commentaires_staff") or [],
+                    }
+                    propre = {k: v for k, v in m.items() if k not in CHAMPS_LOURDS}
+                    if any(detail.values()):
+                        mid = self._id_detail(dict.get(m, "match"), detail)
+                        details[mid] = detail
+                        propre["match_id"] = mid
+                        remplacements.append((j, idx, propre, detail))
+                    else:
+                        remplacements.append((j, idx, propre, None))
+            if not remplacements:
+                return
+            for mid, detail in details.items():
+                set_json(self.club_slug, self._cle_detail(mid), detail)
+            for j, idx, propre, detail in remplacements:
+                j.historique_matchs[idx] = self._nouvelle_entree(propre, detail)
+            self.sauvegarder_donnees()
+        except Exception as exc:
+            print(f"Compactage de l'historique reporté : {exc}")
 
     def charger_donnees(self):
         # Une erreur réseau/base remonte volontairement : on ne doit JAMAIS considérer
@@ -239,11 +361,16 @@ class EquipeManager:
                 j.cartons_jaunes = d.get("cartons_jaunes", 0)
                 j.exclusions_2min = d.get("exclusions_2min", 0)
                 j.cartons_rouges = d.get("cartons_rouges", 0)
-                j.historique_matchs = d.get("historique_matchs", [])
+                j.historique_matchs = [
+                    self._nouvelle_entree(m) if isinstance(m, dict) else m
+                    for m in d.get("historique_matchs", [])
+                ]
                 suivi_raw = d.get("suivi_longitudinal", [])
                 j.suivi_longitudinal = suivi_raw if isinstance(suivi_raw, list) else []
                 self.joueuses[nom] = j
             self._charge_ok = True
+            self._ids_charges = self._ids_details_references()
+            self._compacter_historique_ancien()
         except Exception as e:
             print(f"Erreur lors du chargement : {e}")
 
@@ -289,6 +416,18 @@ class EquipeManager:
             score_eq += g.buts
         score_adv = sum(g.buts_encaisses for g in lignes_gard)
 
+        # Journal, notes et attaques adverses : stockés UNE fois pour le match (et non par joueuse).
+        detail_match = {
+            "attaques_adversaires": attaques_adv_data or {},
+            "journal_actions": journal_actions or [],
+            "commentaires_staff": commentaires_staff or [],
+        }
+        match_id = None
+        if any(detail_match.values()):
+            match_id = self._id_detail(nom_match, detail_match)
+            set_json(self.club_slug, self._cle_detail(match_id), detail_match)
+        champs_lourds = {"match_id": match_id} if match_id else {}
+
         for nom, j in self.joueuses.items():
             if joueuses_actives is not None and j.nom not in joueuses_actives:
                 continue
@@ -300,9 +439,7 @@ class EquipeManager:
                 "score_adversaire": score_adv,
                 "numero_match": numero_a_archiver,
                 "capitaine": capitaine,
-                "attaques_adversaires": attaques_adv_data or {},
-                "journal_actions": journal_actions or [],
-                "commentaires_staff": commentaires_staff or [],
+                **champs_lourds,
             }
 
             if isinstance(j, JoueuseDeChamp):
@@ -337,7 +474,7 @@ class EquipeManager:
                     "cartons_rouges": j.cartons_rouges,
                 }
 
-            j.historique_matchs.append(match_data)
+            j.historique_matchs.append(self._nouvelle_entree(match_data, detail_match))
 
             j.cartons_jaunes = 0
             j.exclusions_2min = 0
@@ -407,9 +544,7 @@ class EquipeManager:
                         "score_adversaire": score_adv,
                         "numero_match": numero_a_archiver_p,
                         "capitaine": capitaine,
-                        "attaques_adversaires": attaques_adv_data or {},
-                        "journal_actions": journal_actions or [],
-                        "commentaires_staff": commentaires_staff or [],
+                        **champs_lourds,
                     }
 
                     if isinstance(jp_orig, JoueuseDeChamp):
@@ -444,7 +579,9 @@ class EquipeManager:
                             "cartons_rouges": jp_orig.cartons_rouges,
                         }
 
-                    jp_orig.historique_matchs.append(match_data_p)
+                    if match_id:
+                        set_json(self.club_slug, mgr_orig._cle_detail(match_id), detail_match)
+                    jp_orig.historique_matchs.append(mgr_orig._nouvelle_entree(match_data_p, detail_match))
                     jp_orig.cartons_jaunes = 0
                     jp_orig.exclusions_2min = 0
                     jp_orig.cartons_rouges = 0
