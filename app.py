@@ -9,6 +9,7 @@ from auth_manager import (
 from manager_app import afficher_espace_manager
 from staff_app import run_staff_app
 from sauvegarde_super_admin import afficher_bloc_super_admin
+from session_persistante import gerer_session_persistante
 
 st.set_page_config(
     page_title="HandStats Pro — Portail Central",
@@ -19,6 +20,7 @@ st.set_page_config(
 
 injecter_theme()
 init_users_db()
+gerer_session_persistante()
 session = st.session_state.user_session
 
 if not session["logged_in"]:
