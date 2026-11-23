@@ -267,6 +267,11 @@ def ecran_connexion():
         st.markdown('<div class="hs-form-title">Connexion à votre espace</div>', unsafe_allow_html=True)
         username = st.text_input("Identifiant").strip().lower()
         password = st.text_input("Mot de passe", type="password")
+        rester_connecte = st.checkbox(
+            "Rester connecté sur cet appareil",
+            value=True,
+            help="Décochez sur un appareil partagé : la session sera fermée à la déconnexion ou à la fermeture de l'application.",
+        )
         submit = st.form_submit_button("Se connecter", type="primary", use_container_width=True)
 
         if submit:
@@ -318,11 +323,57 @@ def ecran_connexion():
                 if club_nom in clubs:
                     st.session_state.club_equipes = clubs[club_nom].get("equipes", [])
 
+                st.session_state["_rester_connecte"] = bool(rester_connecte)
                 st.success(f"Bienvenue, {user_info['nom']} !")
                 st.rerun()
             else:
                 st.error("Identifiant ou mot de passe incorrect.")
 
+
+
+def empreinte_mot_de_passe(username: str) -> str:
+    """Empreinte courte du mot de passe actuel : un changement de mot de passe invalide les sessions mémorisées."""
+    import hashlib
+
+    info = (st.session_state.get("registre_app") or {}).get("users", {}).get(username) or {}
+    return hashlib.sha256(str(info.get("password", "")).encode("utf-8")).hexdigest()[:16]
+
+
+def session_depuis_compte(username: str):
+    """Reconstruit la session d'un compte existant (connexion mémorisée).
+    Retourne None si le compte n'existe plus ou si le club est suspendu / introuvable."""
+    reg = st.session_state.get("registre_app") or {}
+    users = reg.get("users", {})
+    clubs = reg.get("clubs", {})
+    user_info = users.get(username)
+    if not user_info:
+        return None
+
+    role = user_info["role"]
+    club_nom = user_info.get("club")
+    if role != "super_admin":
+        if not club_nom or club_nom not in clubs or not clubs[club_nom].get("actif", True):
+            return None
+
+    equipes_liste = user_info.get("equipes", [])
+    if role in ("staff", "analyste") and club_nom in clubs:
+        equipes_club = clubs[club_nom].get("equipes", [])
+        equipes_liste = [eq for eq in equipes_liste if eq in equipes_club]
+
+    if club_nom in clubs:
+        st.session_state.club_equipes = clubs[club_nom].get("equipes", [])
+
+    return {
+        "logged_in": True,
+        "username": username,
+        "role": role,
+        "nom": user_info["nom"],
+        "club": club_nom,
+        "club_slug": slugify_club(club_nom) if club_nom else None,
+        "equipes": equipes_liste,
+        "equipe_active": equipes_liste[0] if (role in ("staff", "analyste") and len(equipes_liste) == 1) else None,
+        "permissions": obtenir_permissions_utilisateur(user_info),
+    }
 
 
 def afficher_en_tete_avec_profil(titre_principal, sous_titre=None, bouton_parametres=False):

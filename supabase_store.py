@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 TABLE = "kv_store"
 SCOPE_PLATEFORME = "_platform"
 SCOPE_UTILISATEURS = "_users"
+SCOPE_SESSIONS = "_sessions"
 
 
 class StockageIndisponible(RuntimeError):
