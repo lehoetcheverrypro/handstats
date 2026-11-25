@@ -73,6 +73,18 @@ class _Memoire:
             self.rows[(scope, key)] = (json.loads(json.dumps(value)), self.compteur)
             return self.compteur
 
+    def cas(self, scope, key, value, version_attendue):
+        with self.lock:
+            r = self.rows.get((scope, key))
+            if version_attendue is None:
+                if r is not None:
+                    return None
+            elif r is None or r[1] != version_attendue:
+                return None
+            self.compteur += 1
+            self.rows[(scope, key)] = (json.loads(json.dumps(value)), self.compteur)
+            return self.compteur
+
     def remove(self, scope, key):
         with self.lock:
             self.rows.pop((scope, key), None)
@@ -117,6 +129,29 @@ class _Supabase:
                 {"scope": scope, "key": key, "value": value, "updated_at": _maintenant()},
                 on_conflict="scope,key",
             )
+            .execute()
+        )
+        return r.data[0]["updated_at"] if r.data else None
+
+    def cas(self, scope, key, value, version_attendue):
+        """Écrit seulement si la ligne n'a pas changé depuis `version_attendue`
+        (None = création : échoue si la ligne existe déjà). Retourne la nouvelle version, ou None si conflit."""
+        ligne = {"scope": scope, "key": key, "value": value, "updated_at": _maintenant()}
+        if version_attendue is None:
+            try:
+                r = self._t().insert(ligne).execute()
+            except Exception as exc:
+                texte = str(exc).lower()
+                if "23505" in texte or "duplicate" in texte:
+                    return None
+                raise
+            return r.data[0]["updated_at"] if r.data else ligne["updated_at"]
+        r = (
+            self._t()
+            .update({"value": value, "updated_at": ligne["updated_at"]})
+            .eq("scope", scope)
+            .eq("key", key)
+            .eq("updated_at", version_attendue)
             .execute()
         )
         return r.data[0]["updated_at"] if r.data else None
@@ -195,6 +230,26 @@ def set_json(scope: str, key: str, valeur) -> None:
         _CACHE.pop((scope, key), None)
     else:
         _CACHE[(scope, key)] = (version, texte)
+
+
+def lire_avec_version(scope: str, key: str):
+    """(valeur, version) lus directement en base (sans cache), ou None si la ligne n'existe pas."""
+    return _backend().fetch(scope, key)
+
+
+def lire_version(scope: str, key: str):
+    """Version actuelle d'une ligne (requête très légère), ou None si elle n'existe pas."""
+    return _backend().fetch_version(scope, key)
+
+
+def cas_json(scope: str, key: str, valeur, version_attendue):
+    """Écriture conditionnelle (compare-and-swap). Retourne la nouvelle version, ou None s'il y a eu conflit
+    (quelqu'un d'autre a écrit entre-temps). version_attendue=None : création uniquement."""
+    texte = json.dumps(valeur, ensure_ascii=False)
+    version = _backend().cas(scope, key, json.loads(texte), version_attendue)
+    if version is not None:
+        _CACHE[(scope, key)] = (version, texte)
+    return version
 
 
 def delete_json(scope: str, key: str) -> None:

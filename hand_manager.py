@@ -226,6 +226,7 @@ class EquipeManager:
         self.fichier = os.path.join(self.dossier_club, nom_base)   # conservé pour compatibilité
         self._charge_ok = True
         self._ids_charges = set()      # détails de match référencés au chargement (pour le ménage)
+        self.live_hook = None          # défini par l'écran de match en direct (voir staff_app)
         self._details_cache = {}
         self.joueuses = {}
         self.charger_donnees()
@@ -235,14 +236,20 @@ class EquipeManager:
             self.joueuses[nom] = Gardienne(nom, poste, numero)
         else:
             self.joueuses[nom] = JoueuseDeChamp(nom, poste, numero)
-        self.sauvegarder_donnees()
+        self.sauvegarder_donnees(force=True)
 
     def supprimer_joueuse(self, nom):
         if nom in self.joueuses:
             del self.joueuses[nom]
-            self.sauvegarder_donnees()
+            self.sauvegarder_donnees(force=True)
 
-    def sauvegarder_donnees(self):
+    def sauvegarder_donnees(self, force=False):
+        # Pendant un match en direct PARTAGÉ, les compteurs du live ne s'écrivent plus dans la fiche d'équipe :
+        # l'état du match est publié (et fusionné) via live_hook. Seules les opérations de structure
+        # (ajout de joueuse, archivage...) passent avec force=True.
+        if not force and getattr(self, "live_hook", None):
+            self.live_hook()
+            return
         if not getattr(self, "_charge_ok", True):
             raise RuntimeError(
                 "Sauvegarde bloquée : le chargement initial des données a échoué "
@@ -319,7 +326,7 @@ class EquipeManager:
                 set_json(self.club_slug, self._cle_detail(mid), detail)
             for j, idx, propre, detail in remplacements:
                 j.historique_matchs[idx] = self._nouvelle_entree(propre, detail)
-            self.sauvegarder_donnees()
+            self.sauvegarder_donnees(force=True)
         except Exception as exc:
             print(f"Compactage de l'historique reporté : {exc}")
 
@@ -499,7 +506,7 @@ class EquipeManager:
                 j.buts = 0
                 j.tirs = 0
 
-        self.sauvegarder_donnees()
+        self.sauvegarder_donnees(force=True)
 
         # Archivage des joueuses surclassées uniquement au sein du même club
         toutes_du_club = self.recuperer_toutes_les_joueuses_du_club(club_equipes, club_slug=self.club_slug)
@@ -604,14 +611,14 @@ class EquipeManager:
                         jp_orig.buts_encaisses = 0
                         jp_orig.buts = 0
                         jp_orig.tirs = 0
-                    mgr_orig.sauvegarder_donnees()
+                    mgr_orig.sauvegarder_donnees(force=True)
 
     def sauvegarder_commentaire_post_match(self, nom_match, texte_bilan):
         for j in self.joueuses.values():
             for m in j.historique_matchs:
                 if m.get("match") == nom_match:
                     m["bilan_post_match"] = texte_bilan
-        self.sauvegarder_donnees()
+        self.sauvegarder_donnees(force=True)
 
     @staticmethod
     def recuperer_toutes_les_joueuses_du_club(club_equipes, club_slug=None):
@@ -638,7 +645,7 @@ class EquipeManager:
         if nom_joueuse in self.joueuses:
             joueuse_obj = self.joueuses[nom_joueuse]
             autre_manager.joueuses[nom_joueuse] = joueuse_obj
-            autre_manager.sauvegarder_donnees()
+            autre_manager.sauvegarder_donnees(force=True)
             self.supprimer_joueuse(nom_joueuse)
             return True
         return False
@@ -689,7 +696,7 @@ class EquipeManager:
 
         j.suivi_longitudinal.append(entree)
         j.suivi_longitudinal.sort(key=lambda x: str(x.get("date", "")))
-        self.sauvegarder_donnees()
+        self.sauvegarder_donnees(force=True)
         return True
 
 
