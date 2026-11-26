@@ -1362,10 +1362,6 @@ def run_staff_app(equipe_assignee):
                 if st.session_state.get(chrono_enc_key, False) and st.session_state.get(chrono_deb_key):
                     secondes_totales += int(time.time() - st.session_state[chrono_deb_key])
 
-                if not st.session_state.get(popup_key) and st.session_state.get(k_base) is not None:
-                    if st.session_state.get(chrono_enc_key, False) or autres_staffs_connectes():
-                        st_autorefresh(interval=3000, key=f"partage_auto_refresh_{ctx_prefix}")
-
                 accumuler_temps_jeu_depuis_dernier_tick()
 
                 total_buts_marques = sum(get_membre(n).buts for n in joueuses_actives if get_membre(n) and hasattr(get_membre(n), 'buts'))
@@ -1469,6 +1465,13 @@ def run_staff_app(equipe_assignee):
                             pause_btn = st.button("⏸️", key=f"chrono_pause_{ctx_prefix}", use_container_width=True)
                         with cc3:
                             reset_btn = st.button("🔄", key=f"chrono_reset_{ctx_prefix}", use_container_width=True)
+                        if partage_actif and st.session_state.get(k_base) is not None:
+                            if st.button("🔃 Synchro", key=f"btn_sync_manual_{ctx_prefix}", use_container_width=True):
+                                st.session_state[k_pres + "_poll"] = 0
+                                st.session_state[k_pres] = None
+                                synchroniser_match_partage()
+                                st.toast("Match synchronisé.", icon="🔃")
+                                st.rerun()
 
                 if start_btn:
                     if not st.session_state.get(chrono_enc_key, False):
