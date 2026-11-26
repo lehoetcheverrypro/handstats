@@ -20,7 +20,7 @@ from feuille_de_match_pdf import generer_pdf_match
 from rapport_chrono_match_pdf import generer_pdf_chronologique
 from exports_match import construire_payload_match, exporter_match_json, exporter_evenements_csv
 from offline_sync import OfflineSyncManager
-from match_partage import PartageMatch, normaliser_ids
+from match_partage import PartageMatch, ConflitPersistant, normaliser_ids
 from supabase_store import lire_secret
 from tactics import afficher_tableau_tactique
 from auth_manager import a_permission, afficher_en_tete_avec_profil
@@ -38,7 +38,6 @@ from parametres_app import (
     charger_parametres,
     libelle_avec_raccourci,
 )
-
 
 def _action_concerne_joueur(act: dict, joueur) -> bool:
     """Retourne True si l'action concerne le joueur ciblé, quel que soit son numéro de match."""
@@ -278,9 +277,7 @@ def run_staff_app(equipe_assignee):
                 "cartons_rouges": getattr(obj_m, "cartons_rouges", 0),
             }
 
-        secs_cum = st.session_state.get(f"chrono_secondes_cumulees_{ctx_prefix}", 0)
-        if st.session_state.get(f"chrono_en_cours_{ctx_prefix}", False) and st.session_state.get(f"chrono_debut_{ctx_prefix}"):
-            secs_cum += int(time.time() - st.session_state[f"chrono_debut_{ctx_prefix}"])
+        secs_cum = int(st.session_state.get(f"chrono_secondes_cumulees_{ctx_prefix}", 0) or 0)
 
         temps_jeu_key = f"temps_jeu_secondes_{ctx_prefix}"
         temps_jeu_snapshot = dict(st.session_state.get(temps_jeu_key, {}))
@@ -518,11 +515,11 @@ def run_staff_app(equipe_assignee):
         return info if (info and _age_secondes(info["updated_at"]) < 6 * 3600) else None
 
     def publier_etat_partage(snapshot):
+        try:
+            sync_mgr.sauvegarder_brouillon(ctx_prefix, snapshot)
+        except Exception:
+            pass
         if not partage_actif:                                 # mode d'origine : simple brouillon
-            try:
-                sync_mgr.sauvegarder_brouillon(ctx_prefix, snapshot)
-            except Exception:
-                pass
             return
         base = st.session_state.get(k_base)
         signature = _signature(snapshot)
@@ -1365,10 +1362,9 @@ def run_staff_app(equipe_assignee):
                 if st.session_state.get(chrono_enc_key, False) and st.session_state.get(chrono_deb_key):
                     secondes_totales += int(time.time() - st.session_state[chrono_deb_key])
 
-                if st.session_state.get(chrono_enc_key, False) and not st.session_state.get(popup_key):
-                    st_autorefresh(interval=1000, key=f"chrono_auto_refresh_{ctx_prefix}")
-                elif (not st.session_state.get(popup_key)) and st.session_state.get(k_base) is not None and autres_staffs_connectes():
-                    st_autorefresh(interval=2500, key=f"partage_auto_refresh_{ctx_prefix}")
+                if not st.session_state.get(popup_key) and st.session_state.get(k_base) is not None:
+                    if st.session_state.get(chrono_enc_key, False) or autres_staffs_connectes():
+                        st_autorefresh(interval=3000, key=f"partage_auto_refresh_{ctx_prefix}")
 
                 accumuler_temps_jeu_depuis_dernier_tick()
 
@@ -1484,6 +1480,7 @@ def run_staff_app(equipe_assignee):
                     if st.session_state.get(chrono_enc_key, False):
                         st.session_state[chrono_secs_key] += int(time.time() - st.session_state[chrono_deb_key])
                         st.session_state[chrono_enc_key] = False
+                        st.session_state[chrono_deb_key] = None
                         sauvegarder_brouillon_match_local()
                         st.rerun()
                 if reset_btn:
@@ -2115,6 +2112,12 @@ def run_staff_app(equipe_assignee):
 
                             manager.sauvegarder_donnees()
                             sync_mgr.supprimer_brouillon(ctx_prefix)
+                            try:
+                                partage.terminer()
+                            except Exception:
+                                pass
+                            for k_clean in (k_base, k_ver, k_sig, k_info):
+                                st.session_state.pop(k_clean, None)
 
                             st.session_state[f"match_en_cours_{ctx_prefix}"] = False
                             st.session_state[f"capitaine_match_{ctx_prefix}"] = None
@@ -2237,7 +2240,14 @@ def run_staff_app(equipe_assignee):
                                         performance_score=indices_perf_avant_archive.get(nom_c),
                                         note="Clôture match",
                                     )
+
                         sync_mgr.supprimer_brouillon(ctx_prefix)
+                        try:
+                            partage.terminer()
+                        except Exception:
+                            pass
+                        for k_clean in (k_base, k_ver, k_sig, k_info):
+                            st.session_state.pop(k_clean, None)
 
                         st.session_state[f"match_en_cours_{ctx_prefix}"] = False
                         st.session_state[f"capitaine_match_{ctx_prefix}"] = None

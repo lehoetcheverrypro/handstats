@@ -29,11 +29,11 @@ COMPTEURS = ("stats_membres", "zones_tirs_match", "attaques_adversaires", "temps
 MAXIMUMS = ("temps_jeu_secondes",)
 LOCAUX = ("joueuse_focus_live",)          # sélection personnelle : jamais partagée
 GROUPES = (                               # champs qui doivent rester cohérents entre eux
-    ("periode_match", "chrono_raw_cum", "chrono_en_cours", "chrono_debut", "chrono_secondes_cumulees"),
+    ("periode_match", "chrono_en_cours", "chrono_debut", "chrono_secondes_cumulees"),
     ("terrain_joueuses", "banc_joueuses"),
 )
 IDENTITE = {"numero", "type", "nom", "poste"}   # dans stats_membres : informations, pas des compteurs
-MAX_ESSAIS = 8
+MAX_ESSAIS = 10
 MATCH_ABANDONNE_APRES_S = 6 * 3600
 
 
@@ -222,7 +222,7 @@ class PartageMatch:
             if rapide is not None:
                 return Resultat(mine, rapide, False, False)
             base_version = None                                      # quelqu'un a écrit entre-temps : voie complète
-        for _ in range(MAX_ESSAIS):
+        for tentative in range(MAX_ESSAIS):
             actuel = lire_avec_version(self.scope, self.cle)
             if actuel is None:
                 return Resultat(None, None, False, True)
@@ -240,6 +240,7 @@ class PartageMatch:
             if nouvelle_version is not None:
                 return Resultat(fusionne, nouvelle_version, fusion, False)
             base_version = None                                      # collision : on relit et on refusionne
+            time.sleep(min(0.05 * (tentative + 1), 0.25))
         raise ConflitPersistant("trop de modifications simultanées")
 
     def terminer(self) -> None:
