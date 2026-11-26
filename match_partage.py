@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from supabase_store import cas_json, delete_json, get_json, list_keys, lire_avec_version, lire_version, set_json
+from supabase_store import cas_json, delete_json, dump_scope, lire_avec_version, lire_version, set_json
 
 LISTES_AVEC_ID = ("journal_actions", "commentaires_staff")
 COMPTEURS = ("stats_membres", "zones_tirs_match", "attaques_adversaires", "temps_morts")
@@ -245,9 +245,8 @@ class PartageMatch:
     def terminer(self) -> None:
         delete_json(self.scope, self.cle)
         try:
-            for k in list_keys(self.scope):
-                if k.startswith(self._prefixe_presence):
-                    delete_json(self.scope, k)
+            for k in dump_scope(self.scope, self._prefixe_presence):
+                delete_json(self.scope, k)
         except Exception:
             pass
 
@@ -257,10 +256,7 @@ class PartageMatch:
 
     def participants(self, delai: float = 25.0) -> list[dict]:
         actifs, maintenant = [], time.time()
-        for k in list_keys(self.scope):
-            if not k.startswith(self._prefixe_presence):
-                continue
-            v = get_json(self.scope, k, None)
+        for k, v in dump_scope(self.scope, self._prefixe_presence).items():     # une seule requête
             if not isinstance(v, dict):
                 continue
             age = maintenant - float(v.get("ts", 0))

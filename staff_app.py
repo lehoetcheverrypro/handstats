@@ -1,5 +1,8 @@
+import copy
+import json
 import re
 import time
+import uuid
 import streamlit as st
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
@@ -17,6 +20,8 @@ from feuille_de_match_pdf import generer_pdf_match
 from rapport_chrono_match_pdf import generer_pdf_chronologique
 from exports_match import construire_payload_match, exporter_match_json, exporter_evenements_csv
 from offline_sync import OfflineSyncManager
+from match_partage import PartageMatch, normaliser_ids
+from supabase_store import lire_secret
 from tactics import afficher_tableau_tactique
 from auth_manager import a_permission, afficher_en_tete_avec_profil
 from shot_grid import (
@@ -298,80 +303,333 @@ def run_staff_app(equipe_assignee):
             "stats_membres": stats_membres,
             "temps_jeu_secondes": temps_jeu_snapshot,
             "temps_morts": temps_morts_snapshot,
+            "chrono_raw_cum": st.session_state.get(f"chrono_secondes_cumulees_{ctx_prefix}", 0),
+            "chrono_en_cours": bool(st.session_state.get(f"chrono_en_cours_{ctx_prefix}", False)),
+            "chrono_debut": st.session_state.get(f"chrono_debut_{ctx_prefix}"),
+            "capitaine": st.session_state.get(f"capitaine_match_{ctx_prefix}"),
         }
-        sync_mgr.sauvegarder_brouillon(ctx_prefix, state_snapshot)
+        publier_etat_partage(state_snapshot)
 
-    def restaurer_brouillon_match_local_si_besoin():
-        match_enc_key = f"match_en_cours_{ctx_prefix}"
-        brouillon_restaure_key = f"brouillon_restaure_{ctx_prefix}"
-        if st.session_state.get(match_enc_key, False) or st.session_state.get(brouillon_restaure_key, False):
+    # ==================================================================
+    # MATCH EN DIRECT PARTAGÉ : plusieurs staffs, un seul match, un chrono commun
+    # ==================================================================
+    match_en_cours_key = f"match_en_cours_{ctx_prefix}"
+    # Interrupteur : ajouter MATCH_PARTAGE = "0" dans les secrets Streamlit désactive le partage (retour au comportement d'origine).
+    partage_actif = str(lire_secret("MATCH_PARTAGE") or "1").strip() != "0"
+    partage = PartageMatch(club_slug_session, sync_mgr.draft_key(ctx_prefix), ctx_prefix)
+    k_sig = f"partage_sig_{ctx_prefix}"
+    k_base = f"partage_base_{ctx_prefix}"
+    k_ver = f"partage_version_{ctx_prefix}"
+    k_sid = f"partage_sid_{ctx_prefix}"
+    k_pres = f"partage_presence_{ctx_prefix}"
+    k_info = f"partage_info_{ctx_prefix}"
+    utilisateur_login = session.get("username") or "?"
+    utilisateur_nom = session.get("nom") or utilisateur_login
+    if k_sid not in st.session_state:
+        st.session_state[k_sid] = f"{utilisateur_login}#{uuid.uuid4().hex[:6]}"
+
+    def _a_echeance(cle, delai):
+        """True au plus une fois tous les `delai` secondes (par session) : évite de solliciter la base à chaque rafraîchissement."""
+        maintenant = time.time()
+        if maintenant - st.session_state.get(cle, 0) >= delai:
+            st.session_state[cle] = maintenant
+            return True
+        return False
+
+    def _signature(etat):
+        return json.dumps({k: v for k, v in etat.items() if k != "chrono_secondes_cumulees"}, sort_keys=True, default=str)
+
+    def _noter_duree(cle, debut_perf):
+        st.session_state.setdefault("partage_diag", {})[cle] = int((time.perf_counter() - debut_perf) * 1000)
+
+    def _participants():
+        if not partage_actif:
+            return []
+        cache = st.session_state.get(k_pres)
+        if cache and time.time() - cache[0] < 8:
+            return cache[1]
+        liste = []
+        try:
+            if time.time() - st.session_state.get(k_pres + "_hb", 0) > 10:
+                partage.battement(st.session_state[k_sid], utilisateur_nom)
+                st.session_state[k_pres + "_hb"] = time.time()
+            liste = partage.participants()
+        except Exception:
+            pass
+        st.session_state[k_pres] = (time.time(), liste)
+        return liste
+
+    def est_session_chronometreur():
+        """Une seule session cumule le temps de jeu, sinon il serait compté en double."""
+        if not partage_actif:
+            return True
+        try:
+            actifs = [p["sid"] for p in _participants()]
+            return (not actifs) or st.session_state[k_sid] == min(actifs)
+        except Exception:
+            return True
+
+    def autres_staffs_connectes():
+        return [p["nom"] for p in _participants() if p["sid"] != st.session_state[k_sid]]
+
+    def _creer_membre_pret(nom_m, s_info):
+        if nom_m in manager.joueuses or nom_m in st.session_state.get(pretes_key, {}):
             return
+        if s_info.get("type") == "gardienne":
+            st.session_state[pretes_key][nom_m] = Gardienne(nom_m, s_info.get("poste", L["gardien"]), s_info.get("numero", 1))
+        else:
+            st.session_state[pretes_key][nom_m] = JoueuseDeChamp(nom_m, s_info.get("poste", "Arrière gauche"), s_info.get("numero", 1))
 
-        brouillon = sync_mgr.charger_brouillon(ctx_prefix)
-        if not brouillon:
-            return
-
-        st_data = brouillon.get("state", {})
-        actives = st_data.get("joueuses_actives", [])
-        if not actives:
-            return
-
-        stats_membres = st_data.get("stats_membres", {})
-        for nom_m, s_info in stats_membres.items():
-            if nom_m not in manager.joueuses:
-                if s_info.get("type") == "gardienne":
-                    st.session_state[pretes_key][nom_m] = Gardienne(nom_m, s_info.get("poste", L["gardien"]), s_info.get("numero", 1))
-                else:
-                    st.session_state[pretes_key][nom_m] = JoueuseDeChamp(nom_m, s_info.get("poste", "Arrière gauche"), s_info.get("numero", 1))
-
+    def _appliquer_stats(st_data):
+        """Les compteurs du live viennent de l'état partagé (la fiche d'équipe est rechargée à chaque exécution)."""
+        for nom_m, s_info in (st_data.get("stats_membres") or {}).items():
+            _creer_membre_pret(nom_m, s_info)
             obj_m = get_membre(nom_m)
-            if obj_m:
-                obj_m.cartons_jaunes = s_info.get("cartons_jaunes", 0)
-                obj_m.exclusions_2min = s_info.get("exclusions_2min", 0)
-                obj_m.cartons_rouges = s_info.get("cartons_rouges", 0)
-                if isinstance(obj_m, JoueuseDeChamp):
-                    obj_m.buts = s_info.get("buts", 0)
-                    obj_m.tirs = s_info.get("tirs", 0)
-                    obj_m.passes_decisives = s_info.get("passes_decisives", 0)
-                    obj_m.pertes_de_balles_passe = s_info.get("pertes_de_balles_passe", 0)
-                    obj_m.pertes_de_balles_faute = s_info.get("pertes_de_balles_faute", 0)
-                    obj_m.duels_off_gagnes = s_info.get("duels_off_gagnes", 0)
-                    obj_m.duels_off_perdus = s_info.get("duels_off_perdus", 0)
-                    obj_m.duels_def_gagnes = s_info.get("duels_def_gagnes", 0)
-                    obj_m.duels_def_perdus = s_info.get("duels_def_perdus", 0)
-                    obj_m.interceptions = s_info.get("interceptions", 0)
-                    obj_m.neutralisations = s_info.get("neutralisations", 0)
-                    obj_m.pertes_balles_provoquees = s_info.get("pertes_balles_provoquees", 0)
-                elif isinstance(obj_m, Gardienne):
-                    obj_m.arrets = s_info.get("arrets", 0)
-                    obj_m.tirs_subis = s_info.get("tirs_subis", 0)
-                    obj_m.buts_encaisses = s_info.get("buts_encaisses", 0)
-                    obj_m.buts = s_info.get("buts", 0)
-                    obj_m.tirs = s_info.get("tirs", 0)
+            if not obj_m:
+                continue
+            obj_m.cartons_jaunes = s_info.get("cartons_jaunes", 0)
+            obj_m.exclusions_2min = s_info.get("exclusions_2min", 0)
+            obj_m.cartons_rouges = s_info.get("cartons_rouges", 0)
+            if isinstance(obj_m, JoueuseDeChamp):
+                obj_m.buts = s_info.get("buts", 0)
+                obj_m.tirs = s_info.get("tirs", 0)
+                obj_m.passes_decisives = s_info.get("passes_decisives", 0)
+                obj_m.pertes_de_balles_passe = s_info.get("pertes_de_balles_passe", 0)
+                obj_m.pertes_de_balles_faute = s_info.get("pertes_de_balles_faute", 0)
+                obj_m.duels_off_gagnes = s_info.get("duels_off_gagnes", 0)
+                obj_m.duels_off_perdus = s_info.get("duels_off_perdus", 0)
+                obj_m.duels_def_gagnes = s_info.get("duels_def_gagnes", 0)
+                obj_m.duels_def_perdus = s_info.get("duels_def_perdus", 0)
+                obj_m.interceptions = s_info.get("interceptions", 0)
+                obj_m.neutralisations = s_info.get("neutralisations", 0)
+                obj_m.pertes_balles_provoquees = s_info.get("pertes_balles_provoquees", 0)
+            elif isinstance(obj_m, Gardienne):
+                obj_m.arrets = s_info.get("arrets", 0)
+                obj_m.tirs_subis = s_info.get("tirs_subis", 0)
+                obj_m.buts_encaisses = s_info.get("buts_encaisses", 0)
+                obj_m.buts = s_info.get("buts", 0)
+                obj_m.tirs = s_info.get("tirs", 0)
 
-        manager.sauvegarder_donnees()
-        st.session_state[match_enc_key] = True
+    def _appliquer_scalaires(st_data, premiere=False):
+        actives = st_data.get("joueuses_actives", [])
         st.session_state[f"nom_match_actuel_{ctx_prefix}"] = st_data.get("nom_match_actuel", "Match")
         st.session_state[f"joueuses_actives_match_{ctx_prefix}"] = actives
-        st.session_state[f"terrain_joueuses_{ctx_prefix}"] = st_data.get("terrain_joueuses", actives[:7])
-        st.session_state[f"banc_joueuses_{ctx_prefix}"] = st_data.get("banc_joueuses", actives[7:])
-        st.session_state[f"joueuse_focus_live_{ctx_prefix}"] = st_data.get("joueuse_focus_live", actives[0])
-        st.session_state[f"numeros_match_{ctx_prefix}"] = st_data.get("numeros_match", {})
-        st.session_state[f"attaques_adversaires_match_{ctx_prefix}"] = st_data.get(
+        st.session_state[f"terrain_joueuses_{ctx_prefix}"] = list(st_data.get("terrain_joueuses", actives[:7]))
+        st.session_state[f"banc_joueuses_{ctx_prefix}"] = list(st_data.get("banc_joueuses", actives[7:]))
+        focus_key_local = f"joueuse_focus_live_{ctx_prefix}"
+        focus_actuel = st.session_state.get(focus_key_local)
+        if premiere or not focus_actuel or focus_actuel not in actives:
+            focus_partage = st_data.get("joueuse_focus_live")
+            st.session_state[focus_key_local] = focus_partage if focus_partage in actives else (actives[0] if actives else None)
+        st.session_state[f"numeros_match_{ctx_prefix}"] = dict(st_data.get("numeros_match", {}))
+        st.session_state[f"attaques_adversaires_match_{ctx_prefix}"] = dict(st_data.get(
             "attaques_adversaires", {"Yago": 0, "Yego": 0, "Montpellier": 0, "Croisé": 0, "Autre": 0}
-        )
-        st.session_state[f"chrono_en_cours_{ctx_prefix}"] = False
-        st.session_state[f"chrono_secondes_cumulees_{ctx_prefix}"] = st_data.get("chrono_secondes_cumulees", 0)
-        st.session_state[f"chrono_debut_{ctx_prefix}"] = None
+        ))
         st.session_state[f"periode_match_{ctx_prefix}"] = st_data.get("periode_match", "1ère MT")
-        st.session_state[f"journal_actions_match_{ctx_prefix}"] = st_data.get("journal_actions", [])
-        st.session_state[f"commentaires_staff_match_{ctx_prefix}"] = st_data.get("commentaires_staff", [])
-        st.session_state[f"zones_tirs_match_{ctx_prefix}"] = st_data.get("zones_tirs_match", {})
-        st.session_state[f"temps_jeu_secondes_{ctx_prefix}"] = st_data.get("temps_jeu_secondes", {})
-        st.session_state[f"temps_morts_match_{ctx_prefix}"] = st_data.get("temps_morts", {"equipe": 0, "adversaire": 0})
-        st.session_state[brouillon_restaure_key] = True
+        st.session_state[f"journal_actions_match_{ctx_prefix}"] = copy.deepcopy(st_data.get("journal_actions", []))
+        st.session_state[f"commentaires_staff_match_{ctx_prefix}"] = copy.deepcopy(st_data.get("commentaires_staff", []))
+        st.session_state[f"zones_tirs_match_{ctx_prefix}"] = copy.deepcopy(st_data.get("zones_tirs_match", {}))
+        st.session_state[f"temps_jeu_secondes_{ctx_prefix}"] = dict(st_data.get("temps_jeu_secondes", {}))
+        st.session_state[f"temps_morts_match_{ctx_prefix}"] = dict(st_data.get("temps_morts", {"equipe": 0, "adversaire": 0}))
+        if "capitaine" in st_data:
+            st.session_state[f"capitaine_match_{ctx_prefix}"] = st_data.get("capitaine")
+        if "chrono_en_cours" in st_data:       # chrono commun : on suit l'état partagé (horloge du serveur)
+            st.session_state[f"chrono_en_cours_{ctx_prefix}"] = bool(st_data.get("chrono_en_cours"))
+            st.session_state[f"chrono_secondes_cumulees_{ctx_prefix}"] = st_data.get("chrono_raw_cum", 0)
+            st.session_state[f"chrono_debut_{ctx_prefix}"] = st_data.get("chrono_debut")
+        else:                                  # ancien brouillon : chrono arrêté à l'heure sauvegardée
+            st.session_state[f"chrono_en_cours_{ctx_prefix}"] = False
+            st.session_state[f"chrono_secondes_cumulees_{ctx_prefix}"] = st_data.get("chrono_secondes_cumulees", 0)
+            st.session_state[f"chrono_debut_{ctx_prefix}"] = None
 
-    restaurer_brouillon_match_local_si_besoin()
+    def rejoindre_match_partage(suivre=True):
+        lu = partage.lire()
+        if not lu or not lu[0].get("joueuses_actives"):
+            return False
+        etat, version, _ = lu
+        st.session_state.setdefault(pretes_key, {})
+        _appliquer_stats(etat)
+        _appliquer_scalaires(etat, premiere=True)
+        st.session_state[match_en_cours_key] = True
+        st.session_state[f"pop_up_active_{ctx_prefix}"] = None
+        st.session_state[f"etape_saisie_tir_{ctx_prefix}"] = "terrain"
+        st.session_state[f"temp_zone_terrain_{ctx_prefix}"] = None
+        if suivre:
+            st.session_state[k_base] = copy.deepcopy(etat)
+            st.session_state[k_ver] = version
+            st.session_state[k_sig] = _signature(etat)
+        return True
+
+    def sortir_du_match_local():
+        """Le match a été terminé ou annulé par un autre membre du staff : on referme proprement cet écran."""
+        st.session_state[match_en_cours_key] = False
+        st.session_state[f"capitaine_match_{ctx_prefix}"] = None
+        st.session_state[f"attaques_adversaires_match_{ctx_prefix}"] = {"Yago": 0, "Yego": 0, "Montpellier": 0, "Croisé": 0, "Autre": 0}
+        st.session_state[f"zones_tirs_match_{ctx_prefix}"] = {}
+        st.session_state[f"pop_up_active_{ctx_prefix}"] = None
+        st.session_state[f"mode_tablette_plein_ecran_{ctx_prefix}"] = False
+        st.session_state[pretes_key] = {}
+        st.session_state[f"temps_jeu_secondes_{ctx_prefix}"] = {}
+        st.session_state[f"temps_morts_match_{ctx_prefix}"] = {"equipe": 0, "adversaire": 0}
+        st.session_state[f"chrono_en_cours_{ctx_prefix}"] = False
+        st.session_state[f"chrono_secondes_cumulees_{ctx_prefix}"] = 0
+        st.session_state[f"chrono_debut_{ctx_prefix}"] = None
+        for k in (f"numeros_match_{ctx_prefix}", f"journal_actions_match_{ctx_prefix}", k_base, k_ver, k_info):
+            st.session_state.pop(k, None)
+        st.session_state[page_key] = "accueil"
+
+    def _info_match_distant(forcer=False):
+        """Résumé du match en cours d'un autre staff (au plus une requête légère toutes les 5 s)."""
+        if not forcer and not _a_echeance(k_info + "_poll", 5.0):
+            info = st.session_state.get(k_info)
+            return info if (info and info.get("actif")) else None
+        try:
+            ver = partage.version()
+            if ver is None:
+                st.session_state.pop(k_info, None)
+                return None
+            info = st.session_state.get(k_info)
+            if not info or info["ver"] != ver:
+                lu = partage.lire()
+                if not lu:
+                    return None
+                etat, v, env = lu
+                info = {
+                    "ver": v, "nom": etat.get("nom_match_actuel", "Match"), "createur": etat.get("createur", ""),
+                    "maj_par": env.get("maj_par", ""), "maj_par_user": env.get("maj_par_user", ""),
+                    "updated_at": env.get("updated_at", ""), "actif": bool(etat.get("joueuses_actives")),
+                }
+                st.session_state[k_info] = info
+            return info if info["actif"] else None
+        except Exception:
+            return None
+
+    def _age_secondes(iso_str):
+        try:
+            return (datetime.now(datetime.fromisoformat(iso_str).tzinfo) - datetime.fromisoformat(iso_str)).total_seconds()
+        except Exception:
+            return 10 ** 9
+
+    def match_partage_autre_actif(forcer=False):
+        """Match en cours (récent) sur cette équipe, alors que cette session n'en a pas : à rejoindre, pas à recréer."""
+        if not partage_actif or st.session_state.get(match_en_cours_key, False):
+            return None
+        info = _info_match_distant(forcer=forcer)
+        return info if (info and _age_secondes(info["updated_at"]) < 6 * 3600) else None
+
+    def publier_etat_partage(snapshot):
+        if not partage_actif:                                 # mode d'origine : simple brouillon
+            try:
+                sync_mgr.sauvegarder_brouillon(ctx_prefix, snapshot)
+            except Exception:
+                pass
+            return
+        base = st.session_state.get(k_base)
+        signature = _signature(snapshot)
+        if base is not None and signature == st.session_state.get(k_sig):
+            return                                            # rien de nouveau depuis la dernière publication
+        debut_perf = time.perf_counter()
+        try:
+            if base is None:                                  # démarrage du match par cette session
+                etat, version = partage.creer(snapshot, utilisateur_nom, utilisateur_login)
+                st.session_state[k_base] = copy.deepcopy(etat)
+                st.session_state[k_ver] = version
+                st.session_state[k_sig] = signature
+                st.session_state["partage_erreur"] = None
+                return
+            res = partage.publier(base, snapshot, utilisateur_nom, utilisateur_login, base_version=st.session_state.get(k_ver))
+        except Exception as exc:                              # réseau coupé : on continue en local, la fusion se fera plus tard
+            st.session_state["partage_erreur"] = f"{type(exc).__name__}: {exc}"
+            return
+        finally:
+            _noter_duree("publication_ms", debut_perf)
+        st.session_state["partage_erreur"] = None
+        if res.termine:
+            return                                            # détecté à l'exécution suivante par synchroniser_match_partage
+        st.session_state[k_base] = copy.deepcopy(res.etat)
+        st.session_state[k_ver] = res.version
+        st.session_state[k_sig] = _signature(res.etat) if res.fusion else signature
+        if res.fusion:                                        # des saisies d'un autre staff viennent d'être intégrées
+            _appliquer_scalaires(res.etat)
+            _appliquer_stats(res.etat)
+
+    def synchroniser_match_partage():
+        """Appelé à chaque exécution : suit le match partagé, ou reprend automatiquement le sien après une coupure."""
+        if not partage_actif:                                 # partage désactivé : on reprend simplement le brouillon (comportement d'origine)
+            if not st.session_state.get(match_en_cours_key, False) and a_permission("saisie_match") and _a_echeance(k_info + "_restore", 5.0):
+                try:
+                    rejoindre_match_partage(suivre=False)
+                except Exception:
+                    pass
+            return
+        debut_perf = time.perf_counter()
+        try:
+            if not st.session_state.get(match_en_cours_key, False):
+                info = _info_match_distant()
+                if (info and info["maj_par_user"] == utilisateur_login and _age_secondes(info["updated_at"]) < 900
+                        and a_permission("saisie_match")):
+                    rejoindre_match_partage()                 # reprise automatique de MON match (page rechargée, redémarrage)
+                return
+            base = st.session_state.get(k_base)
+            if base is None:
+                return
+            if _a_echeance(k_pres + "_poll", 2.0):            # on interroge la base au plus toutes les 2 secondes
+                version_distante = partage.version()
+                if version_distante is None:
+                    sortir_du_match_local()
+                    st.toast("Ce match a été terminé ou annulé par un autre membre du staff.", icon="ℹ️")
+                    st.rerun()
+                    return
+                if version_distante != st.session_state.get(k_ver):
+                    lu = partage.lire()
+                    if lu:
+                        etat, version, _ = lu
+                        _appliquer_scalaires(etat)
+                        base = copy.deepcopy(etat)
+                        st.session_state[k_base] = base
+                        st.session_state[k_ver] = version
+                        st.session_state[k_sig] = _signature(etat)
+            _appliquer_stats(base)
+        except Exception as exc:
+            if type(exc).__name__ in ("RerunException", "StopException"):
+                raise
+            st.session_state["partage_erreur"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            _noter_duree("synchro_ms", debut_perf)
+
+    def afficher_bandeau_rejoindre():
+        if not partage_actif:
+            return
+        info = match_partage_autre_actif()
+        if not info:
+            return
+        with st.container(border=True):
+            st.markdown("#### 🔴 Match en cours sur cette équipe")
+            minutes = int(_age_secondes(info["updated_at"]) // 60)
+            depuis = "à l'instant" if minutes < 1 else f"il y a {minutes} min"
+            st.write(
+                f"**{info['nom']}** — lancé par **{info['createur'] or 'un membre du staff'}**, "
+                f"dernière saisie par {info['maj_par'] or '—'} ({depuis})."
+            )
+            if not a_permission("saisie_match"):
+                st.info("Votre profil n'a pas la permission de saisie de match : vous ne pouvez pas rejoindre ce match.")
+                return
+            if st.button("🤝 Rejoindre le match en cours", type="primary", use_container_width=True,
+                         key=f"btn_rejoindre_match_{ctx_prefix}"):
+                if rejoindre_match_partage():
+                    aller_a("match")
+                else:
+                    st.error("Impossible de rejoindre le match : il vient peut-être d'être terminé.")
+            with st.expander("Ce match n'existe plus ? L'abandonner"):
+                st.caption("Supprime définitivement le match en cours et ses saisies pour tous les staffs.")
+                if st.checkbox("Je confirme vouloir abandonner ce match", key=f"chk_abandon_match_{ctx_prefix}"):
+                    if st.button("Abandonner ce match", key=f"btn_abandon_match_{ctx_prefix}"):
+                        partage.terminer()
+                        st.session_state.pop(k_info, None)
+                        st.session_state[k_info + "_poll"] = 0
+                        st.rerun()
+
+    synchroniser_match_partage()
 
     def sauvegarder_effectif_securise():
         try:
@@ -460,8 +718,18 @@ def run_staff_app(equipe_assignee):
         if _choix_nav and _choix_nav != _page_courante:
             aller_a(_choix_nav)
 
+    # Pendant le match, chaque enregistrement de l'effectif publie l'état partagé au lieu d'écrire la fiche d'équipe.
+    manager.live_hook = (
+        sauvegarder_brouillon_match_local
+        if (partage_actif and st.session_state[page_key] == "match"
+            and st.session_state.get(f"match_en_cours_{ctx_prefix}", False)
+            and st.session_state.get(k_base) is not None)
+        else None
+    )
+
     if st.session_state[page_key] == "accueil":
         match_en_cours = bool(st.session_state.get(f"match_en_cours_{ctx_prefix}", False))
+        afficher_bandeau_rejoindre()
         tm_acc = st.session_state.get(f"temps_morts_match_{ctx_prefix}", {"equipe": 0, "adversaire": 0})
 
         if hero_match(
@@ -526,6 +794,18 @@ def run_staff_app(equipe_assignee):
                     st.rerun()
 
         st.header(f"⚡ Cockpit de Match en Direct — {equipe_assignee}")
+        if st.session_state.get(match_en_cours_key) and st.session_state.get(k_base) is not None:
+            _autres_staffs = autres_staffs_connectes()
+            if _autres_staffs:
+                st.caption("👥 Match partagé avec : " + ", ".join(_autres_staffs) + " — chrono et saisies communs.")
+            else:
+                st.caption("👥 Match partagé : les autres staffs de l'équipe peuvent le rejoindre depuis l'accueil.")
+            _diag = st.session_state.get("partage_diag", {})
+            if st.session_state.get("partage_erreur"):
+                st.warning("⚠️ Synchronisation avec les autres staffs interrompue (vos saisies sont conservées et seront fusionnées dès le retour de la connexion). "
+                           f"Détail : {st.session_state['partage_erreur']}")
+            elif max(_diag.values() or [0]) > 1500:
+                st.caption(f"⚠️ Synchronisation lente ({max(_diag.values())} ms) : vérifiez la connexion réseau.")
 
         if not a_permission("saisie_match"):
             st.warning("Accès restreint : votre profil ne dispose pas de la permission de saisie de match en direct.")
@@ -658,6 +938,11 @@ def run_staff_app(equipe_assignee):
                                 st.error("Le nom du match ne peut pas être vide.")
                             elif not membres_selectionnes:
                                 st.error(f"Vous devez sélectionner au moins un(e) {L['joueur']}.")
+                            elif match_partage_autre_actif(forcer=True):
+                                st.error(
+                                    "Un match est déjà en cours sur cette équipe (lancé par un autre membre du staff). "
+                                    "Rejoignez-le depuis l'accueil plutôt que d'en créer un second."
+                                )
                             else:
                                 st.session_state[f"match_en_cours_{ctx_prefix}"] = True
                                 st.session_state[f"nom_match_actuel_{ctx_prefix}"] = nom_match_saisi
@@ -686,6 +971,9 @@ def run_staff_app(equipe_assignee):
                                 st.session_state[f"pop_up_active_{ctx_prefix}"] = None
                                 st.session_state[f"etape_saisie_tir_{ctx_prefix}"] = "terrain"
                                 st.session_state[f"temp_zone_terrain_{ctx_prefix}"] = None
+                                st.session_state.pop(k_base, None)
+                                st.session_state.pop(k_ver, None)
+                                sauvegarder_brouillon_match_local()       # publie le match : les autres staffs peuvent le rejoindre
                                 st.rerun()
 
             else:
@@ -753,6 +1041,7 @@ def run_staff_app(equipe_assignee):
                         "details": detail_complet,
                         "periode": periode_str,
                         "horodatage_reel": heure_reelle,
+                        "saisi_par": utilisateur_nom,
                     }
                     if zone_terrain:
                         entry["zone_terrain"] = zone_terrain
@@ -901,6 +1190,9 @@ def run_staff_app(equipe_assignee):
                 def accumuler_temps_jeu_depuis_dernier_tick():
                     tick_key = f"dernier_tick_jeu_{ctx_prefix}"
                     maintenant = time.time()
+                    if st.session_state.get(k_base) is not None and not est_session_chronometreur():
+                        st.session_state[tick_key] = maintenant
+                        return
                     if st.session_state.get(chrono_enc_key, False):
                         precedent = st.session_state.get(tick_key)
                         if precedent is not None:
@@ -1075,6 +1367,8 @@ def run_staff_app(equipe_assignee):
 
                 if st.session_state.get(chrono_enc_key, False) and not st.session_state.get(popup_key):
                     st_autorefresh(interval=1000, key=f"chrono_auto_refresh_{ctx_prefix}")
+                elif (not st.session_state.get(popup_key)) and st.session_state.get(k_base) is not None and autres_staffs_connectes():
+                    st_autorefresh(interval=2500, key=f"partage_auto_refresh_{ctx_prefix}")
 
                 accumuler_temps_jeu_depuis_dernier_tick()
 
@@ -1096,11 +1390,13 @@ def run_staff_app(equipe_assignee):
                         if not st.session_state.get(chrono_enc_key, False):
                             st.session_state[chrono_enc_key] = True
                             st.session_state[chrono_deb_key] = time.time()
+                            sauvegarder_brouillon_match_local()
 
                     def _pause_chrono_tab():
                         if st.session_state.get(chrono_enc_key, False):
                             st.session_state[chrono_secs_key] += int(time.time() - st.session_state[chrono_deb_key])
                             st.session_state[chrono_enc_key] = False
+                            sauvegarder_brouillon_match_local()
 
                     def _ouvrir_popup_tir_tab(nom_j, type_t):
                         st.session_state[popup_key] = (nom_j, type_t)
@@ -1182,16 +1478,19 @@ def run_staff_app(equipe_assignee):
                     if not st.session_state.get(chrono_enc_key, False):
                         st.session_state[chrono_enc_key] = True
                         st.session_state[chrono_deb_key] = time.time()
+                        sauvegarder_brouillon_match_local()
                         st.rerun()
                 if pause_btn:
                     if st.session_state.get(chrono_enc_key, False):
                         st.session_state[chrono_secs_key] += int(time.time() - st.session_state[chrono_deb_key])
                         st.session_state[chrono_enc_key] = False
+                        sauvegarder_brouillon_match_local()
                         st.rerun()
                 if reset_btn:
                     st.session_state[chrono_enc_key] = False
                     st.session_state[chrono_secs_key] = 0
                     st.session_state[chrono_deb_key] = None
+                    sauvegarder_brouillon_match_local()
                     st.rerun()
 
                 periode_actuelle = st.session_state.get(f"periode_match_{ctx_prefix}", "1ère MT")
@@ -1787,6 +2086,7 @@ def run_staff_app(equipe_assignee):
                     with st.expander("⚠️ Zone de danger : Annuler le match en cours (Lancé par erreur)"):
                         st.warning("Attention : Si vous annulez ce match, toutes les actions enregistrées depuis le début de la rencontre seront perdues et les compteurs des joueuses seront remis à zéro.")
                         if st.button("❌ Annuler et abandonner ce match en cours", type="primary", key=f"btn_annuler_match_en_cours_{ctx_prefix}"):
+                            manager.live_hook = None
                             for nom_j_actif in joueuses_actives:
                                 obj_j = get_membre(nom_j_actif)
                                 if obj_j:
@@ -1910,6 +2210,7 @@ def run_staff_app(equipe_assignee):
                                     stats_snapshot, est_gardienne=est_g
                                 )
 
+                        manager.live_hook = None
                         manager.archiver_match(
                             nom_match_actuel,
                             attaques_adv_data=st.session_state.get(att_adv_key, {}),

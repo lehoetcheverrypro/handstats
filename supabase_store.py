@@ -93,9 +93,9 @@ class _Memoire:
         with self.lock:
             return [k for (s, k) in self.rows if s == scope]
 
-    def fetch_scope(self, scope):
+    def fetch_scope(self, scope, prefix=""):
         with self.lock:
-            return {k: json.loads(json.dumps(v[0])) for (s, k), v in self.rows.items() if s == scope}
+            return {k: json.loads(json.dumps(v[0])) for (s, k), v in self.rows.items() if s == scope and k.startswith(prefix)}
 
     def remove_scope(self, scope):
         with self.lock:
@@ -163,9 +163,12 @@ class _Supabase:
         r = self._t().select("key").eq("scope", scope).execute()
         return [row["key"] for row in (r.data or [])]
 
-    def fetch_scope(self, scope):
-        r = self._t().select("key,value").eq("scope", scope).execute()
-        return {row["key"]: row["value"] for row in (r.data or [])}
+    def fetch_scope(self, scope, prefix=""):
+        requete = self._t().select("key,value").eq("scope", scope)
+        if prefix:
+            requete = requete.like("key", prefix.replace("%", "") + "%")
+        r = requete.execute()
+        return {row["key"]: row["value"] for row in (r.data or []) if row["key"].startswith(prefix)}
 
     def remove_scope(self, scope):
         self._t().delete().eq("scope", scope).execute()
@@ -261,9 +264,14 @@ def list_keys(scope: str) -> list[str]:
     return _backend().list_keys(scope)
 
 
-def dump_scope(scope: str) -> dict:
-    """Retourne {key: value} pour tout un scope (sauvegardes, registre)."""
-    return _backend().fetch_scope(scope)
+def dump_scope(scope: str, prefix: str = "") -> dict:
+    """Retourne {key: value} pour tout un scope (sauvegardes, registre), ou seulement les clés commençant par prefix."""
+    return _backend().fetch_scope(scope, prefix)
+
+
+def lire_secret(nom: str):
+    """Lit un réglage dans les secrets Streamlit ou les variables d'environnement."""
+    return _secret(nom)
 
 
 def supprimer_scope(scope: str) -> None:
