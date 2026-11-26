@@ -457,6 +457,8 @@ def run_staff_app(equipe_assignee):
             st.session_state[k_sig] = _signature(etat)
         return True
 
+    DUREE_MAX_MATCH_OUBLIE_S = 3 * 3600  # 3 heures sans mise à jour
+
     def sortir_du_match_local():
         """Le match a été terminé ou annulé par un autre membre du staff : on referme proprement cet écran."""
         st.session_state[match_en_cours_key] = False
@@ -474,6 +476,31 @@ def run_staff_app(equipe_assignee):
         for k in (f"numeros_match_{ctx_prefix}", f"journal_actions_match_{ctx_prefix}", k_base, k_ver, k_info):
             st.session_state.pop(k, None)
         st.session_state[page_key] = "accueil"
+
+    def couper_match_si_expire(info_dist=None) -> bool:
+        """Coupe automatiquement un match oublié dépassant DUREE_MAX_MATCH_OUBLIE_S."""
+        if not partage_actif:
+            return False
+        if not _a_echeance(k_info + "_exp_check", 15.0):
+            return False
+        try:
+            if info_dist is None:
+                info_dist = _info_match_distant(forcer=True)
+            if not info_dist or not info_dist.get("updated_at"):
+                return False
+            if _age_secondes(info_dist["updated_at"]) >= DUREE_MAX_MATCH_OUBLIE_S:
+                try:
+                    partage.terminer()
+                except Exception:
+                    pass
+                st.session_state.pop(k_info, None)
+                if st.session_state.get(match_en_cours_key, False):
+                    sortir_du_match_local()
+                st.toast("Un match inactif depuis plus de 3h a été coupé automatiquement.", icon="🛑")
+                return True
+        except Exception:
+            pass
+        return False
 
     def _info_match_distant(forcer=False):
         """Résumé du match en cours d'un autre staff (au plus une requête légère toutes les 5 s)."""
@@ -512,7 +539,11 @@ def run_staff_app(equipe_assignee):
         if not partage_actif or st.session_state.get(match_en_cours_key, False):
             return None
         info = _info_match_distant(forcer=forcer)
-        return info if (info and _age_secondes(info["updated_at"]) < 6 * 3600) else None
+        if not info:
+            return None
+        if couper_match_si_expire(info):
+            return None
+        return info if _age_secondes(info["updated_at"]) < DUREE_MAX_MATCH_OUBLIE_S else None
 
     def publier_etat_partage(snapshot):
         try:
@@ -561,6 +592,8 @@ def run_staff_app(equipe_assignee):
             return
         debut_perf = time.perf_counter()
         try:
+            if couper_match_si_expire():
+                return
             if not st.session_state.get(match_en_cours_key, False):
                 info = _info_match_distant()
                 if (info and info["maj_par_user"] == utilisateur_login and _age_secondes(info["updated_at"]) < 900
@@ -570,7 +603,7 @@ def run_staff_app(equipe_assignee):
             base = st.session_state.get(k_base)
             if base is None:
                 return
-            if _a_echeance(k_pres + "_poll", 2.0):            # on interroge la base au plus toutes les 2 secondes
+            if _a_echeance(k_pres + "_poll", 1.0):           
                 version_distante = partage.version()
                 if version_distante is None:
                     sortir_du_match_local()

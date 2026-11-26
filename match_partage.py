@@ -34,7 +34,7 @@ GROUPES = (                               # champs qui doivent rester cohérents
 )
 IDENTITE = {"numero", "type", "nom", "poste"}   # dans stats_membres : informations, pas des compteurs
 MAX_ESSAIS = 10
-MATCH_ABANDONNE_APRES_S = 6 * 3600
+MATCH_ABANDONNE_APRES_S = 3 * 3600
 
 
 class ConflitPersistant(RuntimeError):
