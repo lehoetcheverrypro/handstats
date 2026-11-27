@@ -1504,13 +1504,6 @@ def run_staff_app(equipe_assignee):
                             pause_btn = st.button("⏸️", key=f"chrono_pause_{ctx_prefix}", use_container_width=True)
                         with cc3:
                             reset_btn = st.button("🔄", key=f"chrono_reset_{ctx_prefix}", use_container_width=True)
-                        if partage_actif and st.session_state.get(k_base) is not None:
-                            if st.button("🔃 Synchro", key=f"btn_sync_manual_{ctx_prefix}", use_container_width=True):
-                                st.session_state[k_pres + "_poll"] = 0
-                                st.session_state[k_pres] = None
-                                synchroniser_match_partage()
-                                st.toast("Match synchronisé.", icon="🔃")
-                                st.rerun()
 
                 if start_btn:
                     if not st.session_state.get(chrono_enc_key, False):
