@@ -5,7 +5,6 @@ import time
 import uuid
 import streamlit as st
 import pandas as pd
-from streamlit_autorefresh import st_autorefresh
 from datetime import date, datetime
 from hand_manager import (
     EquipeManager,
@@ -30,7 +29,7 @@ from shot_grid import (
     afficher_selecteur_zone_terrain,
 )
 from scouting_adversaire import afficher_onglet_scouting_adversaire
-from saisie_rapide_tablette import afficher_cockpit_tablette_plein_ecran
+from saisie_rapide_tablette import afficher_cockpit_tablette_plein_ecran, afficher_carte_score_chrono_live
 from theme import hero_match, tuile_navigation, barre_laterale, masquer_barre_laterale
 from accueil_dashboard import calculer_resume_saison, afficher_tableau_de_bord
 from parametres_app import (
@@ -546,12 +545,14 @@ def run_staff_app(equipe_assignee):
         return info if _age_secondes(info["updated_at"]) < DUREE_MAX_MATCH_OUBLIE_S else None
 
     def publier_etat_partage(snapshot):
-        try:
-            sync_mgr.sauvegarder_brouillon(ctx_prefix, snapshot)
-        except Exception:
-            pass
         if not partage_actif:                                 # mode d'origine : simple brouillon
+            try:
+                sync_mgr.sauvegarder_brouillon(ctx_prefix, snapshot)
+            except Exception:
+                pass
             return
+        # Mode partagé : la ligne du match EST le brouillon (même clé). L'écrire ici avec un simple upsert
+        # écraserait les saisies des autres staffs et invaliderait la version attendue par la publication.
         base = st.session_state.get(k_base)
         signature = _signature(snapshot)
         if base is not None and signature == st.session_state.get(k_sig):
@@ -660,6 +661,19 @@ def run_staff_app(equipe_assignee):
                         st.rerun()
 
     synchroniser_match_partage()
+
+    if partage_actif and st.session_state.get(match_en_cours_key, False) and st.session_state.get(k_base) is not None:
+        @st.fragment(run_every=4)
+        def _sonde_partage():
+            """Toutes les 4 s : une seule requête légère. Rerun complet uniquement si la version a changé."""
+            try:
+                v = partage.version()
+            except Exception:
+                return
+            if v is None or v != st.session_state.get(k_ver):
+                st.session_state[k_pres + "_poll"] = 0        # force la relecture à la prochaine exécution
+                st.rerun()
+        _sonde_partage()
 
     def sauvegarder_effectif_securise():
         try:
@@ -1458,6 +1472,7 @@ def run_staff_app(equipe_assignee):
                         on_ouvrir_popup_tir=_ouvrir_popup_tir_tab,
                         on_quitter_mode_tablette=_quitter_mode_tab,
                         capitaine=st.session_state.get(f"capitaine_match_{ctx_prefix}"),
+                        secondes_chrono=secondes_totales,
                         )
                     return
 
@@ -1472,21 +1487,12 @@ def run_staff_app(equipe_assignee):
                     """, unsafe_allow_html=True)
 
                 with c_top_score_chrono:
-                    st.markdown(f"""
-                        <div class="top-box-dark" style="background-color: #121620; border: 1px solid #273043; border-radius: 12px; padding: 10px 15px;">
-                            <div style="display: flex; justify-content: space-around; align-items: center;">
-                                <div>
-                                    <div style="font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: #CBD5E1; font-weight: 600;">Score</div>
-                                    <div style="font-size: 22px; font-weight: 800; color: #FFFFFF; line-height: 1.1;">{total_buts_marques}  —  {total_buts_encaisses}</div>
-                                </div>
-                                <div style="border-left: 1px solid #273043; height: 28px; margin: 0 10px;"></div>
-                                <div>
-                                    <div style="font-size: 9px; letter-spacing: 1px; text-transform: uppercase; color: #CBD5E1; font-weight: 600;">Chrono</div>
-                                    <div style="font-size: 22px; font-weight: 800; color: #38BDF8; line-height: 1.1; font-family: monospace;">{temps_actuel_str}</div>
-                                </div>
-                            </div>
-                        </div>
-                    """, unsafe_allow_html=True)
+                    afficher_carte_score_chrono_live(
+                        total_buts_marques,
+                        total_buts_encaisses,
+                        secondes_totales,
+                        st.session_state.get(chrono_enc_key, False),
+                    )
 
                 with c_top_controls:
                     with st.container(border=True):

@@ -1,3 +1,4 @@
+import html
 import json
 import streamlit as st
 import streamlit.components.v1 as components
@@ -7,6 +8,85 @@ from parametres_app import (
     formater_touche_affichage,
     libelle_avec_raccourci,
 )
+
+
+def _secondes_depuis_texte(temps: str) -> int:
+    try:
+        m, s = str(temps).split(":")[-2:]
+        return int(m) * 60 + int(s)
+    except Exception:
+        return 0
+
+
+def _js_chrono(element_id: str, secondes: float, en_cours: bool) -> str:
+    """Fait avancer le chrono dans le navigateur, sans relancer Streamlit.
+    `secondes` est le temps déjà écoulé calculé par le serveur : les écrans partagés restent donc synchronisés."""
+    return f"""
+    <script>
+      (function() {{
+        var t0 = performance.now(), base = {float(secondes):.2f}, run = {str(bool(en_cours)).lower()};
+        var el = document.getElementById('{element_id}');
+        function f() {{
+          var s = Math.floor(base + (run ? (performance.now() - t0) / 1000 : 0));
+          var m = Math.floor(s / 60), r = s % 60;
+          el.textContent = (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
+        }}
+        f();
+        if (run) setInterval(f, 250);
+      }})();
+    </script>"""
+
+
+def afficher_carte_score_chrono_live(score_marques, score_encaisses, secondes: float, en_cours: bool) -> None:
+    """Carte « Score / Chrono » du cockpit complet, avec chrono animé côté navigateur."""
+    secondes = max(0, int(secondes))
+    initial = f"{secondes // 60:02d}:{secondes % 60:02d}"
+    components.html(
+        f"""
+        <div style="font-family:'Source Sans Pro',sans-serif;background:#121620;border:1px solid #273043;
+                    border-radius:12px;padding:10px 15px;box-sizing:border-box;">
+          <div style="display:flex;justify-content:space-around;align-items:center;">
+            <div>
+              <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:#CBD5E1;font-weight:600;">Score</div>
+              <div style="font-size:22px;font-weight:800;color:#FFFFFF;line-height:1.1;">{score_marques} — {score_encaisses}</div>
+            </div>
+            <div style="border-left:1px solid #273043;height:28px;margin:0 10px;"></div>
+            <div>
+              <div style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:#CBD5E1;font-weight:600;">Chrono</div>
+              <div id="chrono" style="font-size:22px;font-weight:800;color:#38BDF8;line-height:1.1;font-family:monospace;">{initial}</div>
+            </div>
+          </div>
+        </div>
+        <style>html,body{{margin:0;background:transparent;}}</style>
+        {_js_chrono("chrono", secondes, en_cours)}
+        """,
+        height=68,
+    )
+
+
+def _afficher_hud_tablette_live(equipe, nom_match, score_marques, score_encaisses, periode, secondes, en_cours) -> None:
+    secondes = max(0, int(secondes))
+    initial = f"{secondes // 60:02d}:{secondes % 60:02d}"
+    meta_gauche = html.escape(f"{equipe} • {nom_match}")
+    components.html(
+        f"""
+        <div style="font-family:'Source Sans Pro',sans-serif;background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);
+                    color:#f8fafc;border:1px solid #334155;border-radius:12px;padding:8px 14px;box-sizing:border-box;
+                    display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div style="font-size:12px;color:#94a3b8;font-weight:600;">{meta_gauche}</div>
+            <div style="font-size:24px;font-weight:900;letter-spacing:.5px;color:#fff;">{score_marques} — {score_encaisses}</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:12px;color:#94a3b8;font-weight:600;">{html.escape(str(periode))}</div>
+            <div id="chrono" style="font-size:22px;font-weight:800;font-family:monospace;color:#38bdf8;">{initial}</div>
+          </div>
+        </div>
+        <style>html,body{{margin:0;background:transparent;}}</style>
+        {_js_chrono("chrono", secondes, en_cours)}
+        """,
+        height=70,
+    )
 
 
 def _injecter_css_tablette_plein_ecran():
@@ -144,7 +224,7 @@ def _injecter_raccourcis_clavier(actif: bool = True, prefix: str = "", keymap: d
             function cliquerJoueurTerrain(indexZeroBased) {{
                 const buttons = Array.from(parentDoc.querySelectorAll('button'));
                 const playerBtns = buttons.filter(btn => {{
-                    if (btn.disabled || !estVisible(btn)) continue;
+                    if (btn.disabled || !estVisible(btn)) return false;
                     const txt = (btn.innerText || '').trim();
                     return txt.includes('#') && (
                         txt.startsWith('🔵') ||
@@ -308,6 +388,7 @@ def afficher_cockpit_tablette_plein_ecran(
     on_ouvrir_popup_tir,
     on_quitter_mode_tablette,
     capitaine: str | None = None,
+    secondes_chrono: float | None = None,
 ):
     """
     Affiche l'interface de saisie live plein écran sans distraction optimisée pour tablette tactile.
@@ -334,20 +415,14 @@ def afficher_cockpit_tablette_plein_ecran(
     c_hud_main, c_hud_btn1, c_hud_btn2, c_hud_btn3 = st.columns([3.2, 1.1, 1.2, 1.2])
 
     with c_hud_main:
-        st.markdown(
-            f"""
-            <div class="tab-hud-bar">
-                <div>
-                    <div class="tab-hud-meta">{equipe_assignee} • {nom_match_actuel}</div>
-                    <div class="tab-hud-score">{total_buts_marques} — {total_buts_encaisses}</div>
-                </div>
-                <div style="text-align: right;">
-                    <div class="tab-hud-meta">{periode_actuelle}</div>
-                    <div class="tab-hud-chrono">{temps_actuel_str}</div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        _afficher_hud_tablette_live(
+            equipe_assignee,
+            nom_match_actuel,
+            total_buts_marques,
+            total_buts_encaisses,
+            periode_actuelle,
+            secondes_chrono if secondes_chrono is not None else _secondes_depuis_texte(temps_actuel_str),
+            chrono_en_cours,
         )
 
     with c_hud_btn1:
